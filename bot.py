@@ -1,12 +1,17 @@
 import asyncio
+import hashlib
+import hmac
 import json
 import logging
 import os
 import re
 import subprocess
 import sys
+import time
+from datetime import date
 from html import escape
 from pathlib import Path
+from urllib.parse import urlencode
 
 import aiohttp
 from aiogram import Bot, Dispatcher, F
@@ -35,6 +40,24 @@ AUTOBUY_FILE = Path(os.getenv("AUTOBUY_FILE", "autobuy.json"))
 SHOP_API_BASE = os.getenv("SHOP_API_BASE", "https://tunvnmmo.duckdns.org").rstrip("/")
 SHOP_API_KEY  = os.getenv("SHOP_API_KEY", "").strip()
 AUTOBUY_INTERVAL = int(os.getenv("AUTOBUY_INTERVAL", "30"))  # сек между проверками наличия
+
+# Binance (автопополнение баланса шопа USDT-выводом)
+BINANCE_API_BASE   = "https://api.binance.com"
+BINANCE_API_KEY    = os.getenv("BINANCE_API_KEY", "").strip()
+BINANCE_API_SECRET = os.getenv("BINANCE_API_SECRET", "").strip()
+TOPUP_STATE_FILE   = Path(os.getenv("TOPUP_STATE_FILE", "topup_state.json"))
+TOPUP_PER_TX_LIMIT   = float(os.getenv("TOPUP_PER_TX_LIMIT_USDT", "20"))   # лимит за один автовывод
+TOPUP_DAILY_LIMIT    = float(os.getenv("TOPUP_DAILY_LIMIT_USDT", "50"))   # лимит за сутки
+TOPUP_COOLDOWN_SEC   = int(os.getenv("TOPUP_COOLDOWN_SEC", "900"))        # не чаще раза в 15 мин на один watch
+TOPUP_FEE_FALLBACK   = float(os.getenv("TOPUP_FEE_FALLBACK_USDT", "1.5")) # запасная комиссия, если Binance не отдал
+
+NETWORK_ALIASES = {
+    "TRC20": "TRX", "TRON": "TRX", "TRX": "TRX",
+    "BEP20": "BSC", "BSC": "BSC", "BNBSMARTCHAIN": "BSC", "BNB": "BSC",
+    "ERC20": "ETH", "ETH": "ETH", "ETHEREUM": "ETH",
+    "POLYGON": "MATIC", "MATIC": "MATIC",
+    "SOL": "SOL", "SOLANA": "SOL",
+}
 
 if not BOT_TOKEN:
     raise SystemExit("BOT_TOKEN env var is required")
@@ -177,7 +200,9 @@ HELP_TEXT = (
     f"{CE_TRASH} /use N — удалить аккаунт №N\n"
     f"{CE_WARN} /clear — очистить Grok-склад\n"
     f"{CE_KEY} /settoken TOKEN — сменить токен бота\n"
-    f"{CE_KEY} /setapikey КЛЮЧ — API-ключ шопа\n\n"
+    f"{CE_KEY} /setapikey КЛЮЧ — API-ключ шопа\n"
+    f"{CE_KEY} /setbinance KEY SECRET — ключ Binance для автовывода\n"
+    f"{CE_PIN} /autotopup on|off — автопополнение баланса шопа с Binance\n\n"
     f"{CE_TIP} Кнопки пропали? Отправь /start"
 )
 
@@ -185,6 +210,7 @@ _lock = asyncio.Lock()
 pending_add: dict[int, list[dict]] = {}
 pending_clear: set[int] = set()
 pending_buy: dict[int, dict] = {}      # user_id -> {"p": product, "cat": str, "qty": int}
+pending_topup_confirm: dict[str, dict] = {}  # token -> {"address","network","tag","amount","chat_id"}
 pending_store: dict[int, list[str]] = {}  # user_id -> строки "mail | pass [| 2fa]" для добавления
 gpt_prod_cache: dict[int, dict] = {}   # product_id -> product (снимок последнего /api/products)
 
@@ -326,6 +352,221 @@ async def send_items_chunks(send_func, header: str, items: list[str]) -> None:
         parts.append(cur)
     for part in parts:
         await send_func(part)
+
+
+# ─── Binance (автопополнение) ────────────────────────────────────────────────
+
+def load_topup_state() -> dict:
+    st = {}
+    if TOPUP_STATE_FILE.exists():
+        try:
+            loaded = json.loads(TOPUP_STATE_FILE.read_text(encoding="utf-8"))
+            if isinstance(loaded, dict):
+                st = loaded
+        except Exception as e:
+            log.exception("Failed to load %s: %s", TOPUP_STATE_FILE, e)
+    today = date.today().isoformat()
+    if st.get("date") != today:
+        st = {"date": today, "withdrawn": 0.0, "auto_enabled": st.get("auto_enabled", False)}
+    st.setdefault("auto_enabled", False)
+    return st
+
+
+def save_topup_state(st: dict) -> None:
+    tmp = TOPUP_STATE_FILE.with_suffix(".tmp")
+    tmp.write_text(json.dumps(st, ensure_ascii=False, indent=2), encoding="utf-8")
+    os.replace(tmp, TOPUP_STATE_FILE)
+
+
+async def binance_signed(method: str, path: str, params: dict) -> dict:
+    if not (BINANCE_API_KEY and BINANCE_API_SECRET):
+        return {"_error": "Binance API-ключ не задан. /setbinance KEY SECRET"}
+    params = {**params, "timestamp": int(time.time() * 1000), "recvWindow": 10000}
+    query = urlencode(params)
+    sig = hmac.new(BINANCE_API_SECRET.encode(), query.encode(), hashlib.sha256).hexdigest()
+    url = f"{BINANCE_API_BASE}{path}?{query}&signature={sig}"
+    headers = {"X-MBX-APIKEY": BINANCE_API_KEY}
+    try:
+        timeout = aiohttp.ClientTimeout(total=20)
+        async with aiohttp.ClientSession(timeout=timeout) as sess:
+            async with sess.request(method, url, headers=headers) as resp:
+                data = await resp.json(content_type=None)
+                if resp.status != 200:
+                    return {"_error": f"Binance HTTP {resp.status}: {data}"}
+                return data
+    except Exception as e:
+        return {"_error": f"Binance недоступен: {e}"}
+
+
+async def binance_usdt_balance() -> tuple[float | None, str | None]:
+    data = await binance_signed("POST", "/sapi/v3/asset/getUserAsset", {"asset": "USDT"})
+    if isinstance(data, dict) and data.get("_error"):
+        return None, data["_error"]
+    if not data:
+        return 0.0, None
+    try:
+        return float(data[0].get("free", 0)), None
+    except Exception:
+        return None, f"Неожиданный ответ Binance: {data}"
+
+
+async def binance_network_fee(network: str) -> float | None:
+    data = await binance_signed("GET", "/sapi/v1/capital/config/getall", {})
+    if isinstance(data, dict) and data.get("_error"):
+        return None
+    for asset_cfg in data or []:
+        if asset_cfg.get("coin") != "USDT":
+            continue
+        for net in asset_cfg.get("networkList", []):
+            if net.get("network") == network:
+                try:
+                    return float(net.get("withdrawFee", TOPUP_FEE_FALLBACK))
+                except Exception:
+                    return TOPUP_FEE_FALLBACK
+    return None
+
+
+async def binance_withdraw(address: str, amount: float, network: str, tag: str | None = None) -> dict:
+    params = {
+        "coin": "USDT", "address": address, "amount": amount, "network": network,
+    }
+    if tag:
+        params["addressTag"] = tag
+    return await binance_signed("POST", "/sapi/v1/capital/withdraw/apply", params)
+
+
+def _parse_deposit_wallet(deposit: dict) -> tuple[str | None, str | None, str | None]:
+    """Достаёт (адрес, сеть, memo/tag) из ответа /api/deposit, не угадывая наугад."""
+    NET_KEYS = ("network", "chain", "coin_network")
+    ADDR_KEYS = ("address", "wallet_address", "usdt_address", "wallet", "account_number")
+    TAG_KEYS = ("memo", "tag", "address_tag")
+
+    def find_network(d: dict) -> str | None:
+        for key in NET_KEYS:
+            v = d.get(key)
+            if isinstance(v, str):
+                return v
+        return None
+
+    def find_tag(d: dict) -> str | None:
+        for key in TAG_KEYS:
+            v = d.get(key)
+            if isinstance(v, str):
+                return v
+        return None
+
+    address, network_raw, tag = None, None, None
+    for key in ADDR_KEYS:
+        v = deposit.get(key)
+        if isinstance(v, str) and len(v) >= 20:
+            address, network_raw, tag = v, find_network(deposit), find_tag(deposit)
+            break
+        if isinstance(v, dict):
+            for kk in ("address", "wallet_address"):
+                if isinstance(v.get(kk), str) and len(v[kk]) >= 20:
+                    address = v[kk]
+                    network_raw = find_network(v) or find_network(deposit)
+                    tag = find_tag(v) or find_tag(deposit)
+                    break
+        if address:
+            break
+
+    network = NETWORK_ALIASES.get((network_raw or "").upper().replace("-", "").replace(" ", ""))
+    return address, network, tag
+
+
+def _trust_key(network: str, address: str) -> str:
+    return f"{network}:{address}"
+
+
+async def _execute_withdrawal(
+    bot: Bot, chat_id: int, address: str, network: str, tag: str | None, amount: float,
+) -> tuple[bool, str]:
+    st = load_topup_state()
+    remaining_daily = TOPUP_DAILY_LIMIT - st.get("withdrawn", 0.0)
+    if remaining_daily <= 0:
+        return False, f"Дневной лимит автовывода исчерпан ({TOPUP_DAILY_LIMIT} USDT/сутки)."
+    amount = min(amount, remaining_daily)
+
+    bal, err = await binance_usdt_balance()
+    if err:
+        return False, f"Binance баланс: {err}"
+    fee = await binance_network_fee(network) or TOPUP_FEE_FALLBACK
+    if bal < amount + fee:
+        return False, f"На Binance не хватает: нужно ~{amount + fee:.2f} USDT, есть {bal:.2f} USDT."
+
+    withdraw_amount = round(amount, 2)
+    res = await binance_withdraw(address, withdraw_amount, network, tag)
+    if res.get("_error") or not res.get("id"):
+        return False, f"Вывод с Binance не удался: {res.get('_error') or res}"
+
+    st["withdrawn"] = st.get("withdrawn", 0.0) + withdraw_amount
+    save_topup_state(st)
+
+    await bot.send_message(
+        chat_id,
+        f"{CE_OK} <b>Автопополнение отправлено:</b> {withdraw_amount} USDT → шоп ({network}).\n"
+        f"Жду зачисления, докуплю в следующем цикле проверки.",
+        parse_mode="HTML",
+    )
+    return True, "ok"
+
+
+async def try_auto_topup(bot: Bot, chat_id: int, need_usdt: float) -> tuple[bool, str]:
+    st = load_topup_state()
+    if not st.get("auto_enabled"):
+        return False, "Автопополнение выключено (/autotopup on)."
+    if not (BINANCE_API_KEY and BINANCE_API_SECRET):
+        return False, "Не задан ключ Binance (/setbinance KEY SECRET)."
+
+    remaining_daily = TOPUP_DAILY_LIMIT - st.get("withdrawn", 0.0)
+    if remaining_daily <= 0:
+        return False, f"Дневной лимит автовывода исчерпан ({TOPUP_DAILY_LIMIT} USDT/сутки)."
+
+    amount = min(need_usdt + TOPUP_FEE_FALLBACK, TOPUP_PER_TX_LIMIT, remaining_daily)
+    if amount <= 0:
+        return False, "Сумма пополнения получилась нулевой."
+
+    dep = await shop_api("POST", "/api/deposit", {"amount": round(amount, 2), "currency": "usdt"})
+    if not dep.get("success"):
+        return False, f"Шоп отклонил заявку на депозит: {dep.get('error')}"
+    deposit = dep.get("deposit", {})
+    address, network, tag = _parse_deposit_wallet(deposit)
+
+    if not address or not network:
+        await bot.send_message(
+            chat_id,
+            f"{CE_WARN} <b>Не смог разобрать ответ шопа на /api/deposit</b> — не рискую отправлять крипту вслепую.\n"
+            f"<code>{escape(json.dumps(deposit, ensure_ascii=False))}</code>\n\n"
+            f"Проверь формат вручную.",
+            parse_mode="HTML",
+        )
+        return False, "Не удалось распознать адрес/сеть в ответе шопа."
+
+    trusted = st.get("trusted_addresses", {})
+    key = _trust_key(network, address)
+    if key not in trusted:
+        token = os.urandom(6).hex()
+        pending_topup_confirm[token] = {
+            "address": address, "network": network, "tag": tag,
+            "amount": amount, "chat_id": chat_id,
+        }
+        await bot.send_message(
+            chat_id,
+            f"{CE_WARN} <b>Новый адрес пополнения от шопа — ещё не доверенный.</b>\n"
+            f"Сеть: <b>{network}</b>\n"
+            f"Адрес: <code>{escape(address)}</code>\n"
+            f"Сумма: <b>{amount:.2f} USDT</b>\n\n"
+            f"Подтверди один раз — дальше для этого адреса пополнение будет идти автоматически.",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[[
+                InlineKeyboardButton(text="Подтвердить и вывести", callback_data=f"topup_confirm:{token}", style=ButtonStyle.SUCCESS, icon_custom_emoji_id=ID_OK),
+                InlineKeyboardButton(text="Отклонить", callback_data=f"topup_reject:{token}", style=ButtonStyle.DANGER, icon_custom_emoji_id=ID_NO),
+            ]]),
+            parse_mode="HTML",
+        )
+        return False, "Ожидает подтверждения нового адреса от админа."
+
+    return await _execute_withdrawal(bot, chat_id, address, network, tag, amount)
 
 
 def parse_accounts(text: str) -> list[dict]:
@@ -802,6 +1043,84 @@ async def cmd_setapikey(message: Message, command):
             f"<code>{escape(str(bal.get('error')))}</code>",
             parse_mode="HTML", reply_markup=MK,
         )
+
+
+def _write_env_vars(updates: dict[str, str]) -> None:
+    env_path = Path(__file__).parent / ".env"
+    lines = env_path.read_text(encoding="utf-8").splitlines() if env_path.exists() else []
+    remaining = dict(updates)
+    new_lines = []
+    for line in lines:
+        key = line.split("=", 1)[0] if "=" in line else None
+        if key in remaining:
+            new_lines.append(f"{key}={remaining.pop(key)}")
+        else:
+            new_lines.append(line)
+    for key, val in remaining.items():
+        new_lines.append(f"{key}={val}")
+    env_path.write_text("\n".join(new_lines) + "\n", encoding="utf-8")
+
+
+@dp.message(Command("setbinance"))
+async def cmd_setbinance(message: Message, command):
+    """Задать Binance API Key + Secret (HMAC) для автовывода USDT на шоп."""
+    if not is_admin(message):
+        return
+    args = (command.args or "").strip().split()
+    if len(args) != 2:
+        await message.answer(
+            f"{CE_KEY} Использование: <code>/setbinance API_KEY API_SECRET</code>\n"
+            f"Ключ с правом <b>Enable Withdrawals</b> + IP-restriction на этот сервер.\n\n"
+            f"{CE_WARN} Удали это сообщение сразу после отправки!",
+            parse_mode="HTML", reply_markup=MK,
+        )
+        return
+    new_key, new_secret = args
+    try:
+        _write_env_vars({"BINANCE_API_KEY": new_key, "BINANCE_API_SECRET": new_secret})
+    except Exception as e:
+        await message.answer(f"{CE_NO} Не удалось обновить .env:\n<code>{escape(str(e))}</code>", parse_mode="HTML", reply_markup=MK)
+        return
+
+    global BINANCE_API_KEY, BINANCE_API_SECRET
+    BINANCE_API_KEY, BINANCE_API_SECRET = new_key, new_secret
+    bal, err = await binance_usdt_balance()
+    try:
+        await message.delete()
+    except Exception:
+        pass
+    if err:
+        await message.answer(f"{CE_WARN} Ключ сохранён, но проверка не прошла:\n<code>{escape(err)}</code>", parse_mode="HTML", reply_markup=MK)
+    else:
+        await message.answer(
+            f"{CE_OK} Binance-ключ сохранён и работает!\nБаланс USDT: <b>{bal:.2f}</b>\n\n"
+            f"{CE_TIP} Включи автопополнение: /autotopup on",
+            parse_mode="HTML", reply_markup=MK,
+        )
+
+
+@dp.message(Command("autotopup"))
+async def cmd_autotopup(message: Message, command):
+    if not is_admin(message):
+        return
+    arg = (command.args or "").strip().lower()
+    st = load_topup_state()
+    if arg not in ("on", "off"):
+        status = "включено" if st.get("auto_enabled") else "выключено"
+        await message.answer(
+            f"{CE_PIN} <b>Автопополнение:</b> {status}\n"
+            f"Использовано сегодня: <b>{st.get('withdrawn', 0):.2f}</b> / {TOPUP_DAILY_LIMIT} USDT\n"
+            f"Лимит за раз: {TOPUP_PER_TX_LIMIT} USDT\n\n"
+            f"Использование: <code>/autotopup on</code> или <code>/autotopup off</code>",
+            parse_mode="HTML", reply_markup=MK,
+        )
+        return
+    st["auto_enabled"] = (arg == "on")
+    save_topup_state(st)
+    await message.answer(
+        f"{CE_OK} Автопополнение {'включено' if arg == 'on' else 'выключено'}.",
+        parse_mode="HTML", reply_markup=MK,
+    )
 
 
 # ─── /pop, /Nday ──────────────────────────────────────────────────────────────
@@ -1333,6 +1652,48 @@ async def cb_store_cancel(cb: CallbackQuery):
     await cb.message.edit_text(f"{CE_NO} Добавление отменено.", parse_mode="HTML")
 
 
+@dp.callback_query(F.data.startswith("topup_confirm:"))
+async def cb_topup_confirm(cb: CallbackQuery):
+    if not is_admin_cb(cb):
+        return
+    token = cb.data.split(":", 1)[1]
+    info = pending_topup_confirm.pop(token, None)
+    if not info:
+        await cb.answer("Заявка устарела или уже обработана.", show_alert=True)
+        return
+    await cb.answer("Подтверждаю и вывожу...")
+
+    st = load_topup_state()
+    trusted = st.setdefault("trusted_addresses", {})
+    trusted[_trust_key(info["network"], info["address"])] = True
+    save_topup_state(st)
+
+    ok, reason = await _execute_withdrawal(
+        cb.message.bot, info["chat_id"], info["address"], info["network"], info["tag"], info["amount"],
+    )
+    note = "Адрес добавлен в доверенные — дальше пополнения на него пойдут без подтверждения."
+    if ok:
+        await cb.message.edit_text(f"{CE_OK} {note}", parse_mode="HTML")
+    else:
+        await cb.message.edit_text(
+            f"{CE_WARN} {note}\nНо вывод сейчас не прошёл: {escape(reason)}",
+            parse_mode="HTML",
+        )
+
+
+@dp.callback_query(F.data.startswith("topup_reject:"))
+async def cb_topup_reject(cb: CallbackQuery):
+    if not is_admin_cb(cb):
+        return
+    token = cb.data.split(":", 1)[1]
+    pending_topup_confirm.pop(token, None)
+    await cb.answer("Отклонено.")
+    await cb.message.edit_text(
+        f"{CE_NO} Пополнение отклонено, адрес в доверенные не добавлен.",
+        parse_mode="HTML",
+    )
+
+
 # ─── Grok inline callbacks ────────────────────────────────────────────────────
 
 @dp.callback_query(F.data.startswith("grok_d:"))
@@ -1653,6 +2014,16 @@ async def _autobuy_tick(bot: Bot) -> None:
                     f"Пополни — куплю автоматически.",
                     parse_mode="HTML",
                 )
+
+            last_try = w.get("last_topup_attempt", 0)
+            if time.time() - last_try >= TOPUP_COOLDOWN_SEC:
+                w["last_topup_attempt"] = time.time()
+                changed = True
+                need_usdt = max(0.0, price_usdt * want - bal.get("balance_usdt", 0))
+                ok, reason = await try_auto_topup(bot, w["chat_id"], need_usdt)
+                if not ok:
+                    log.info("Auto top-up skipped for watch %s: %s", w.get("name"), reason)
+
             remaining.append(w)
             continue
 
@@ -1717,8 +2088,10 @@ async def main():
         BotCommand(command="use",      description="🗑 Удалить Grok по номеру"),
         BotCommand(command="clear",    description="⚠️ Очистить Grok-склад"),
         BotCommand(command="settoken",  description="🔑 Сменить токен бота"),
-        BotCommand(command="setapikey", description="🛒 Задать API-ключ шопа"),
-        BotCommand(command="help",      description="❓ Помощь"),
+        BotCommand(command="setapikey",  description="🛒 Задать API-ключ шопа"),
+        BotCommand(command="setbinance", description="🔑 Ключ Binance для автовывода"),
+        BotCommand(command="autotopup",  description="📌 Автопополнение шопа on/off"),
+        BotCommand(command="help",       description="❓ Помощь"),
     ])
     await bot.set_chat_menu_button(menu_button=MenuButtonCommands())
     asyncio.create_task(autobuy_loop(bot))
