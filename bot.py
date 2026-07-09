@@ -30,6 +30,7 @@ GEMINI_FILE = Path(os.getenv("GEMINI_FILE", "gemini.json"))
 CHATGPT_FILE = Path(os.getenv("CHATGPT_FILE", "chatgpt.json"))
 CAPCUT_FILE  = Path(os.getenv("CAPCUT_FILE",  "capcut.json"))
 AUTOBUY_FILE = Path(os.getenv("AUTOBUY_FILE", "autobuy.json"))
+PRODUCTS_SEEN_FILE = Path(os.getenv("PRODUCTS_SEEN_FILE", "products_seen.json"))
 
 # Shop API (покупка ChatGPT-аккаунтов)
 SHOP_API_BASE = os.getenv("SHOP_API_BASE", "https://tunvnmmo.duckdns.org").rstrip("/")
@@ -282,11 +283,79 @@ async def shop_api(method: str, path: str, payload: dict | None = None) -> dict:
         return {"success": False, "error": f"Сеть/API недоступен: {e}"}
 
 
-def fmt_vnd(v) -> str:
-    return f"{int(v):,}".replace(",", " ") + "₫"
-
 def fmt_usdt(v) -> str:
     return f"{float(v):g}$"
+
+
+# Словарь перевода частых фраз из описаний магазина (VN/EN → RU)
+DESC_PHRASES = [
+    ("Full warranty", "Полная гарантия"),
+    ("Non warranty", "Без гарантии"),
+    ("No warranty", "Без гарантии"),
+    ("7 Days Warranty", "Гарантия 7 дней"),
+    ("24 hours holding warranty", "Гарантия удержания 24 часа"),
+    ("This product is full warranty", "Товар с полной гарантией"),
+    ("Log in directly by Email and Password to Grok", "Вход напрямую по почте и паролю в Grok"),
+    ("Log in 2 Devices", "Вход на 2 устройствах"),
+    ("DO NOT unlink X account", "НЕ отвязывай аккаунт X"),
+    ("DO NOT unlink X", "НЕ отвязывай X"),
+    ("DO NOT change mail", "НЕ меняй почту"),
+    ("CAN change password", "Можно менять пароль"),
+    ("Can be used on any accounts", "Можно активировать на любом аккаунте"),
+    ("Do not need Card", "Карта не нужна"),
+    ("Can invite 5 more members to family", "Можно пригласить ещё 5 человек в семью"),
+    ("Click on the link and confirm", "Перейди по ссылке и подтверди"),
+    ("Password Capcut", "Пароль Capcut"),
+    ("Password Mail", "Пароль почты"),
+    ("Mail website", "Сайт почты"),
+    ("2FA site", "Сайт 2FA"),
+    ("using hotmail", "используется hotmail"),
+    ("NO Renew", "без продления"),
+    ("Team Plan", "командный план"),
+    ("Month", "мес"),
+    ("Year", "год"),
+    ("Days", "дней"),
+    ("Devices", "устройства"),
+    ("Format", "Формат"),
+    ("Duration", "Срок"),
+    ("Mail", "Почта"),
+    ("Password", "Пароль"),
+    ("Pay by", "Оплата через"),
+]
+
+
+def translate_desc(text: str) -> str:
+    """Взять англ. часть описания (после разделителя ===) и перевести частые фразы на RU."""
+    if not text:
+        return ""
+    # Многие описания: вьетнамская часть === английская часть. Берём английскую.
+    parts = re.split(r"={3,}", text)
+    chunk = text
+    for part in parts:
+        if re.search(r"[A-Za-z]", part) and not re.search(r"[àáảãạăâđêôơưọầấ]", part.lower()):
+            chunk = part
+            break
+    lines = [ln.strip() for ln in chunk.splitlines()]
+    out = []
+    for ln in lines:
+        if not ln:
+            continue
+        for en, ru in DESC_PHRASES:
+            # \b — только целые слова, чтобы не портить URL (email и т.п.)
+            ln = re.sub(rf"\b{re.escape(en)}\b", ru, ln, flags=re.IGNORECASE)
+        out.append(ln)
+    return "\n".join(out).strip()
+
+
+def cat_filter(products: list[dict], cat: str) -> list[dict]:
+    match = SHOP_CATS[cat]["match"]
+    return [p for p in products if match in p.get("name", "").lower()]
+
+def prod_short_name(name: str, cat: str) -> str:
+    """Убрать название категории из имени товара для кнопки."""
+    n = re.sub(r"^[^A-Za-z0-9]+", "", name)  # срезать эмодзи/символы в начале
+    n = re.sub(r"(?i)^(chat\s*gpt|grok|link\s+gemini|gemini|capcut)\s*(plus|super|pro(\s+team)?)?\s*", "", n).strip(" -")
+    return n or name
 
 def cat_filter(products: list[dict], cat: str) -> list[dict]:
     match = SHOP_CATS[cat]["match"]
@@ -793,7 +862,7 @@ async def cmd_setapikey(message: Message, command):
         await message.answer(
             f"{CE_OK} API-ключ сохранён и работает!\n"
             f"Аккаунт: <b>{escape(str(bal.get('username', '?')))}</b>\n"
-            f"Баланс: <b>{fmt_vnd(bal.get('balance_vnd', 0))}</b> / <b>{fmt_usdt(bal.get('balance_usdt', 0))}</b>",
+            f"Баланс: <b>{fmt_usdt(bal.get('balance_usdt', 0))}</b>",
             parse_mode="HTML", reply_markup=MK,
         )
     else:
@@ -1010,7 +1079,7 @@ async def cb_shop_buy(cb: CallbackQuery):
     bal = await shop_api("GET", "/api/balance")
     bal_line = ""
     if bal.get("success"):
-        bal_line = f"\nБаланс: <b>{fmt_vnd(bal.get('balance_vnd', 0))}</b> | <b>{fmt_usdt(bal.get('balance_usdt', 0))}</b>"
+        bal_line = f"\nБаланс: <b>{fmt_usdt(bal.get('balance_usdt', 0))}</b>"
 
     lines = [f"{c['ce']} <b>{c['title']} — купить:</b>{bal_line}\n"]
     rows = []
@@ -1020,7 +1089,7 @@ async def cb_shop_buy(cb: CallbackQuery):
         mark = CE_OK if stock > 0 else CE_EMPTY
         lines.append(
             f"{mark} <b>{escape(p['name'])}</b>\n"
-            f"      {fmt_vnd(p.get('price_vnd', 0))} / {fmt_usdt(p.get('price_usdt', 0))} — в наличии: <b>{stock}</b>"
+            f"      {fmt_usdt(p.get('price_usdt', 0))} — в наличии: <b>{stock}</b>"
         )
         rows.append([InlineKeyboardButton(
             text=f"{prod_short_name(p['name'], cat)} · {stock} шт",
@@ -1053,10 +1122,13 @@ async def cb_shop_prod(cb: CallbackQuery):
         return
     await cb.answer()
     pending_buy[cb.from_user.id] = {"p": p, "cat": cat}
+    desc = translate_desc(p.get("description", ""))
+    desc_block = f"\n<blockquote>{escape(desc)}</blockquote>\n" if desc else ""
     await cb.message.edit_text(
         f"{c['ce']} <b>{escape(p['name'])}</b>\n"
-        f"Цена: {fmt_vnd(p.get('price_vnd', 0))} / {fmt_usdt(p.get('price_usdt', 0))}\n"
-        f"В наличии: <b>{p.get('stock', 0)}</b> шт.\n\n"
+        f"Цена: {fmt_usdt(p.get('price_usdt', 0))}\n"
+        f"В наличии: <b>{p.get('stock', 0)}</b> шт.\n"
+        f"{desc_block}\n"
         f"{CE_KBD} <b>Отправь количество сообщением</b> (1-100):",
         reply_markup=InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton(text="Назад", callback_data=f"shop_buy:{cat}", style=ButtonStyle.DANGER, icon_custom_emoji_id=ID_NO)],
@@ -1093,8 +1165,8 @@ async def cb_shop_now(cb: CallbackQuery):
         else:
             msg = (
                 f"{CE_WARN} <b>Недостаточно средств.</b>\n"
-                f"Нужно: {fmt_vnd(total_vnd)} / {fmt_usdt(total_usdt)}\n"
-                f"Баланс: {fmt_vnd(bal.get('balance_vnd', 0))} / {fmt_usdt(bal.get('balance_usdt', 0))}"
+                f"Нужно: {fmt_usdt(total_usdt)}\n"
+                f"Баланс: {fmt_usdt(bal.get('balance_usdt', 0))}"
             )
         await cb.message.edit_text(msg, reply_markup=_buy_confirm_keyboard(), parse_mode="HTML")
         return
@@ -1501,7 +1573,7 @@ async def handle_text(message: Message):
         await message.answer(
             f"{CE_GPT} <b>{escape(p['name'])}</b>\n"
             f"Количество: <b>{qty}</b> шт.\n"
-            f"Итого: <b>{fmt_vnd(total_vnd)}</b> / <b>{fmt_usdt(total_usdt)}</b>\n"
+            f"Итого: <b>{fmt_usdt(total_usdt)}</b>\n"
             f"В наличии сейчас: {p.get('stock', 0)} шт.\n\n"
             f"Выбери действие:",
             reply_markup=_buy_confirm_keyboard(), parse_mode="HTML",
@@ -1609,14 +1681,59 @@ async def handle_text(message: Message):
 
 # ─── Фоновая автопокупка ──────────────────────────────────────────────────────
 
-async def _autobuy_tick(bot: Bot) -> None:
+def load_seen_products() -> set[int]:
+    data = _load_json(PRODUCTS_SEEN_FILE)
+    return set(data) if isinstance(data, list) else set()
+
+def save_seen_products(ids: set[int]) -> None:
+    _save_json(PRODUCTS_SEEN_FILE, sorted(ids))
+
+def _product_category(p: dict) -> str | None:
+    name = p.get("name", "").lower()
+    for cat, c in SHOP_CATS.items():
+        if c["match"] in name:
+            return cat
+    return None
+
+
+async def _check_new_products(bot: Bot, products: list[dict]) -> None:
+    """Уведомить админа о новых товарах в магазине."""
+    current = {p["id"] for p in products}
+    if not PRODUCTS_SEEN_FILE.exists():
+        save_seen_products(current)  # первый запуск — запоминаем молча
+        return
+    seen = load_seen_products()
+    new_ids = current - seen
+    if not new_ids:
+        return
+    for p in products:
+        if p["id"] not in new_ids:
+            continue
+        cat = _product_category(p)
+        if cat:
+            c = SHOP_CATS[cat]
+            where = f"{c['ce']} Уже доступен: раздел <b>{c['title']}</b> → Купить."
+        else:
+            where = f"{CE_WARN} Не подходит ни под один раздел — напиши, добавлю его."
+        try:
+            await bot.send_message(
+                ADMIN_ID,
+                f"{CE_PIN} <b>Новый товар в магазине!</b>\n"
+                f"<b>{escape(p.get('name', '?'))}</b>\n"
+                f"Цена: {fmt_usdt(p.get('price_usdt', 0))} — в наличии: <b>{p.get('stock', 0)}</b> шт.\n\n"
+                f"{where}",
+                parse_mode="HTML",
+            )
+        except Exception:
+            log.exception("Failed to notify about new product %s", p.get("id"))
+    save_seen_products(seen | current)
+
+
+async def _autobuy_tick(bot: Bot, products: list[dict]) -> None:
     watches = load_autobuy()
     if not watches:
         return
-    data = await shop_api("GET", "/api/products")
-    if not data.get("success"):
-        return
-    stock_map = {p["id"]: p for p in data.get("products", [])}
+    stock_map = {p["id"]: p for p in products}
     remaining: list[dict] = []
     changed = False
 
@@ -1649,7 +1766,7 @@ async def _autobuy_tick(bot: Bot) -> None:
                     w["chat_id"],
                     f"{CE_WARN} <b>Автопокупка: товар появился, но не хватает баланса!</b>\n"
                     f"{w_ce} {escape(w.get('name', '?'))} — в наличии {stock} шт.\n"
-                    f"Баланс: {fmt_vnd(bal.get('balance_vnd', 0))} / {fmt_usdt(bal.get('balance_usdt', 0))}\n"
+                    f"Баланс: {fmt_usdt(bal.get('balance_usdt', 0))}\n"
                     f"Пополни — куплю автоматически.",
                     parse_mode="HTML",
                 )
@@ -1689,13 +1806,17 @@ async def _autobuy_tick(bot: Bot) -> None:
             save_autobuy(remaining)
 
 
-async def autobuy_loop(bot: Bot) -> None:
-    log.info("Autobuy loop started (interval %ss)", AUTOBUY_INTERVAL)
+async def shop_loop(bot: Bot) -> None:
+    log.info("Shop loop started (interval %ss)", AUTOBUY_INTERVAL)
     while True:
         try:
-            await _autobuy_tick(bot)
+            data = await shop_api("GET", "/api/products")
+            if data.get("success"):
+                products = data.get("products", [])
+                await _check_new_products(bot, products)
+                await _autobuy_tick(bot, products)
         except Exception:
-            log.exception("Autobuy tick failed")
+            log.exception("Shop loop tick failed")
         await asyncio.sleep(AUTOBUY_INTERVAL)
 
 
@@ -1721,7 +1842,7 @@ async def main():
         BotCommand(command="help",      description="❓ Помощь"),
     ])
     await bot.set_chat_menu_button(menu_button=MenuButtonCommands())
-    asyncio.create_task(autobuy_loop(bot))
+    asyncio.create_task(shop_loop(bot))
     log.info("Commands registered. Starting polling...")
     await dp.start_polling(bot)
 
