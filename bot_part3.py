@@ -1,11 +1,11 @@
-# ─── AI-Bot: часть 3 — адаптеры API магазинов ────────────────────────────────────────
+# ─── AI-Bot: часть 3 — адаптеры API магазинов ──────────────────────────────
 # Legacy (X-API-Key), Reseller API (/v1, ключ rsk_...), Buyer API (ключ tgb_...)
 
 import uuid
 import zlib
 
 
-# ─── Reseller API (/v1) — переходник ────────────────────────────────────────────────────
+# ─── Reseller API (/v1) — переходник ──────────────────────────────
 
 def _shop_api_type(shop: dict) -> str:
     """Тип API шопа: 'legacy', 'reseller' (rsk_...) или 'tgbuyer' (tgb_...)."""
@@ -123,7 +123,7 @@ async def _reseller_api(shop: dict, method: str, path: str, payload: dict | None
         return {"success": False, "error": f"Сеть/API недоступен: {e}"}
 
 
-# ─── Buyer API (tgb_...) — переходник ─────────────────────────────────────────────────────
+# ─── Buyer API (tgb_...) — переходник ──────────────────────────────
 
 _tgb_ids: dict[str, str] = {}
 
