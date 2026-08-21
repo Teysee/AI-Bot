@@ -1,4 +1,4 @@
-# ─── Шоп-разделы (Grok / Gemini / ChatGPT / CapCut / свои) ───────────────────
+# ─── Шоп-разделы (Grok / Gemini / ChatGPT / CapCut / свои) ──────────────────────────────
 
 def _cat_store_count(cat: str) -> str:
     if cat == "grok":
@@ -403,7 +403,7 @@ async def cb_shop_unwatch(cb: CallbackQuery):
     await cb_shop_watch(cb2)
 
 
-# ─── Добавление аккаунтов "mail | pass [| код]" — выбор раздела ──────────────
+# ─── Добавление аккаунтов "mail | pass [| код]" — выбор раздела ──────────────────────────────
 
 @dp.callback_query(F.data.startswith("store_as:"))
 async def cb_store_as(cb: CallbackQuery):
@@ -463,7 +463,7 @@ async def cb_store_cancel(cb: CallbackQuery):
     await cb.message.edit_text(f"{CE_NO} Добавление отменено.", parse_mode="HTML")
 
 
-# ─── Grok inline callbacks ────────────────────────────────────────────────────
+# ─── Grok inline callbacks ──────────────────────────────
 
 @dp.callback_query(F.data.startswith("grok_d:"))
 async def cb_grok_days(cb: CallbackQuery):
@@ -564,7 +564,7 @@ async def cb_grok_cancel(cb: CallbackQuery):
     await cb.message.edit_text(f"{CE_NO} Отменено.", parse_mode="HTML")
 
 
-# ─── Добавление аккаунтов (inline callback) ─────────────────────────────────────
+# ─── Добавление аккаунтов (inline callback) ──────────────────────────────
 
 @dp.callback_query(F.data.startswith("add_days:"))
 async def cb_add_days(cb: CallbackQuery):
@@ -609,7 +609,7 @@ async def cb_add_cancel(cb: CallbackQuery):
     await cb.message.edit_text(f"{CE_NO} Добавление отменено.", parse_mode="HTML")
 
 
-# ─── Раздел «Магазины» — все шопы и весь ассортимент ────────────────────────
+# ─── Раздел «Магазины» — все шопы и весь ассортимент ──────────────────────────────
 
 ID_MALL = "5373052667671093676"
 CE_MALL = _e(ID_MALL, "🏪")
@@ -775,7 +775,7 @@ async def cb_mall_prod(cb: CallbackQuery):
     )
 
 
-# ─── Универсальный обработчик входящего текста ────────────────────────────────
+# ─── Универсальный обработчик входящего текста ──────────────────────────────
 
 @dp.message(F.text)
 async def handle_text(message: Message):
@@ -784,7 +784,7 @@ async def handle_text(message: Message):
     text = (message.text or "").strip()
     uid = message.from_user.id
 
-    # ── Ожидание эмодзи для раздела ──────────────────────────────────────
+    # ── Ожидание эмодзи для раздела ──────────────────────────────
     if uid in pending_emoji:
         key = pending_emoji.pop(uid)
         cats = load_custom_cats()
@@ -818,13 +818,13 @@ async def handle_text(message: Message):
             await message.answer(f"{CE_WARN} Это не похоже на эмодзи. Пришли эмодзи или /skip.", parse_mode="HTML")
         return
 
-    # ── Кнопки пользовательских разделов ────────────────────────────────────
+    # ── Кнопки пользовательских разделов ──────────────────────────────
     for key, c in all_cats().items():
         if c.get("custom") and text == c["title"]:
             await _send_cat_menu(message, key)
             return
 
-    # ── Количество для покупки в шопе ────────────────────────────────────────
+    # ── Количество для покупки в шопе ──────────────────────────────
     if uid in pending_buy and text.isdigit():
         qty = int(text)
         if not 1 <= qty <= 100:
@@ -846,7 +846,7 @@ async def handle_text(message: Message):
         )
         return
 
-    # ── CDK: строки вида 3TG-…, bbg…-…, GGG-… ──────────────────────
+    # ── CDK: строки вида 3TG-…, bbg…-…, GGG-… ──────────────────────────────
     raw_lines = [l.strip() for l in text.splitlines() if l.strip()]
     detected_cdk: list[dict] = []
     for line in raw_lines:
@@ -883,7 +883,7 @@ async def handle_text(message: Message):
         await message.answer(msg, parse_mode="HTML", reply_markup=MK)
         return
 
-    # ── Аккаунты через "|": mail | pass [| код] → спросить раздел ──────────
+    # ── Аккаунты через "|": mail | pass [| код] → спросить раздел ──────────────────────────────
     detected_pipe = []
     for l in raw_lines:
         m = RE_PIPE_LINE.match(l)
@@ -913,7 +913,7 @@ async def handle_text(message: Message):
         )
         return
 
-    # ── Gemini: ссылки serviceactivation.google.com ─────────────────────
+    # ── Gemini: ссылки serviceactivation.google.com ──────────────────────────────
     gemini_urls = RE_GEMINI_URL.findall(text)
     if gemini_urls:
         async with _lock:
@@ -935,7 +935,7 @@ async def handle_text(message: Message):
         await message.answer(msg, parse_mode="HTML", reply_markup=MK)
         return
 
-    # ── Grok аккаунты ─────────────────────────────────────────────────────
+    # ── Grok аккаунты ──────────────────────────────
     parsed = parse_accounts(text)
     if not parsed:
         await message.answer(
@@ -952,7 +952,7 @@ async def handle_text(message: Message):
     )
 
 
-# ─── Фоновая автопокупка (по всем шопам) ───────────────────────────────────
+# ─── Фоновая автопокупка (по всем шопам) ──────────────────────────────
 
 def load_seen_products() -> dict[str, list]:
     data = _load_json_any(PRODUCTS_SEEN_FILE)
@@ -1123,130 +1123,13 @@ async def shop_loop(bot: Bot) -> None:
         await asyncio.sleep(AUTOBUY_INTERVAL)
 
 
-# ─── Reseller API (/v1) — переходник ────────────────────────────────────────────────
+# ─── Адаптеры API магазинов (Reseller /v1, Buyer tgb_) — в bot_part3.py ──────────────────────────────
 
-def _shop_api_type(shop: dict) -> str:
-    """Тип API шопа: 'legacy' (первый шоп) или 'reseller' (/v1/..., ключ rsk_...)."""
-    t = shop.get("api_type")
-    if t in ("legacy", "reseller"):
-        return t
-    return "reseller" if str(shop.get("key", "")).startswith("rsk_") else "legacy"
+_PART3 = Path(__file__).resolve().with_name("bot_part3.py")
+exec(compile(_PART3.read_text(encoding="utf-8"), str(_PART3), "exec"))
 
 
-def _strip_html(text: str) -> str:
-    """Убрать HTML-теги из описаний Reseller API."""
-    from html import unescape
-    if not text:
-        return ""
-    text = re.sub(r"<br\s*/?>", "\n", text)
-    text = re.sub(r"<[^>]+>", "", text)
-    return unescape(text).strip()
-
-
-def _reseller_err(data) -> str:
-    if isinstance(data, dict):
-        d = data.get("detail")
-        if isinstance(d, str):
-            return d
-        if d is not None:
-            return json.dumps(d, ensure_ascii=False)[:300]
-    return str(data)[:300]
-
-
-async def _reseller_api(shop: dict, method: str, path: str, payload: dict | None = None) -> dict:
-    """Переходник Reseller API (/v1/...) -> формат ответов первого шопа."""
-    base = str(shop.get("base", "")).rstrip("/")
-    headers = {"Authorization": f"Bearer {shop['key']}"}
-
-    async def call(m: str, p: str, body: dict | None = None):
-        timeout = aiohttp.ClientTimeout(total=30)
-        async with aiohttp.ClientSession(timeout=timeout) as sess:
-            async with sess.request(m, f"{base}{p}", json=body, headers=headers) as resp:
-                return resp.status, await resp.json(content_type=None)
-
-    try:
-        if method == "GET" and path == "/api/balance":
-            status, data = await call("GET", "/v1/me")
-            if status != 200 or not isinstance(data, dict):
-                return {"success": False, "error": _reseller_err(data)}
-            return {
-                "success": True,
-                "username": data.get("name") or data.get("telegram_username", "?"),
-                "balance_usdt": float(data.get("balance") or 0),
-                "balance_vnd": -1,
-            }
-
-        if method == "GET" and path == "/api/products":
-            status, data = await call("GET", "/v1/products")
-            if status != 200 or not isinstance(data, dict):
-                return {"success": False, "error": _reseller_err(data)}
-            prods = []
-            for p in data.get("products", []):
-                stock = p.get("stock")
-                desc = _strip_html(p.get("description") or "")
-                if p.get("inputs"):
-                    need = ", ".join(str(i.get("name", "?")) for i in p["inputs"])
-                    desc = f"{desc}\n[!] Шоп требует при заказе: {need}".strip()
-                prods.append({
-                    "id": p.get("id"),
-                    "name": p.get("name", "?"),
-                    "price_usdt": float(p.get("your_unit_price") or p.get("retail_price") or 0),
-                    "price_vnd": 0,
-                    "stock": 999 if stock is None else int(stock),
-                    "description": desc,
-                })
-            return {"success": True, "products": prods}
-
-        if method == "POST" and path == "/api/buy":
-            payload = payload or {}
-            status, data = await call("POST", "/v1/orders", {
-                "product_id": payload.get("product_id"),
-                "quantity": payload.get("quantity", 1),
-            })
-            if status not in (200, 201) or not isinstance(data, dict) or "order_id" not in data:
-                return {"success": False, "error": _reseller_err(data)}
-            items = [str(c) for c in (data.get("delivered_codes") or [])]
-            if not items:
-                items = [
-                    f"Заказ #{data.get('order_id')} принят (статус: {data.get('status')}). "
-                    f"Коды придут позже — проверь заказ в шопе."
-                ]
-            instr = _strip_html(data.get("delivery_instructions") or "")
-            if instr:
-                items.append(f"Инструкция:\n{instr}")
-            nb = None
-            st_me, me = await call("GET", "/v1/me")
-            if st_me == 200 and isinstance(me, dict):
-                nb = f"{float(me.get('balance') or 0):g}$"
-            return {
-                "success": True,
-                "order": {
-                    "product": data.get("product_name", ""),
-                    "total_items": data.get("delivered_count") or data.get("quantity", 0),
-                    "total_price": data.get("amount"),
-                    "currency": "USD",
-                },
-                "items": items,
-                "new_balance": nb,
-            }
-
-        status, data = await call(method, path, payload)
-        return data if isinstance(data, dict) else {"success": False, "error": str(data)[:300]}
-    except Exception as e:
-        return {"success": False, "error": f"Сеть/API недоступен: {e}"}
-
-
-_legacy_shop_api = shop_api
-
-
-async def shop_api(shop: dict | None, method: str, path: str, payload: dict | None = None) -> dict:
-    """Роутер: шопы с Reseller API (ключ rsk_...) идут через переходник."""
-    if shop and shop.get("key") and _shop_api_type(shop) == "reseller":
-        return await _reseller_api(shop, method, path, payload)
-    return await _legacy_shop_api(shop, method, path, payload)
-
-
-# ─── Запуск ───────────────────────────────────────────────────────────────────
+# ─── Запуск ──────────────────────────────
 
 async def main():
     bot = Bot(token=BOT_TOKEN)
