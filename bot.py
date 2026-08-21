@@ -116,3 +116,225 @@ SHOP_CATS = {
     "claude": {"title": "Claude",  "icon": ID_CLAUDE, "ce": CE_CLAUDE, "match": "claude"},
     "pplx":   {"title": "Perplexity", "icon": ID_PPLX, "ce": CE_PPLX, "match": "perplex"},
 }
+
+RE_LABELED = re.compile(
+    r"(?:E-?mail|Login|User(?:name)?|Логин|Почта|Account)\s*[:\-]\s*(\S+)"
+    r"\s*[\r\n]+\s*"
+    r"(?:Password|Pass|Пароль|Pwd|Пасс)\s*[:\-]\s*(\S+)",
+    re.IGNORECASE,
+)
+RE_INLINE = re.compile(
+    r"([a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,})"
+    r"\s*[|;:\t]\s*"
+    r"(?!//)(\S+)"
+)
+RE_TWO_LINE = re.compile(
+    r"([a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,})"
+    r"\s*[\r\n]+\s*"
+    r"([^\r\n\s@|;:]{4,})"
+)
+RE_SPACE = re.compile(
+    r"([a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,})"
+    r"\s{1,3}"
+    r"([^\r\n\s@|;:]{4,})"
+)
+RE_GEMINI_URL = re.compile(
+    r"https://serviceactivation\.google\.com/subscription/new/\S+"
+)
+
+VALID_DAYS = (3, 7, 14, 30, 60)
+DAYS_EMOJI = {3: CE_D3, 7: CE_D7, 14: CE_D14, 30: CE_D30, 60: CE_D60}
+DAYS_EMOJI_P = {3: "⚡", 7: "📅", 14: "🌟", 30: "👑", 60: "🔥"}
+CDK_SUPPORTED = {3, 30, 60}
+CDK_ONLY = {60}
+CDK_PATTERNS = [
+    (re.compile(r"^3TG-[A-Z0-9]+$",   re.IGNORECASE), 3),
+    (re.compile(r"^bbg[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+                                       re.IGNORECASE), 30),
+    (re.compile(r"^GGG-[A-Z0-9]+$",   re.IGNORECASE), 60),
+]
+
+HELP_TEXT = (
+    f"{CE_BOX} <b>Склад подписок</b>\n\n"
+    f"{CE_OUT} <b>Как выдавать:</b>\n"
+    f"Нажми {CE_GROK} <b>Grok</b>, {CE_GEMINI} <b>Gemini</b>, {CE_GPT} <b>ChatGPT</b>, "
+    f"{CE_CAPCUT} <b>CapCut</b>, {CE_CLAUDE} <b>Claude</b> "
+    f"или {CE_PPLX} <b>Perplexity</b> → выбери раздел\n\n"
+    f"{CE_TIP} В каждом разделе: <b>Купить</b> — покупка через шоп "
+    f"(сейчас или автопокупка при появлении), <b>Хранилище</b> — выдача со склада\n\n"
+    f"{CE_LIST} /list — список Grok-аккаунтов\n"
+    f"{CE_COUNT} /count — статистика всего склада\n"
+    f"{CE_TRASH} /use N — удалить аккаунт №N\n"
+    f"{CE_WARN} /clear — очистить Grok-склад\n"
+    f"{CE_KEY} /settoken TOKEN — сменить токен бота\n"
+    f"{CE_KEY} /setapikey КЛЮЧ — API-ключ шопа\n"
+    f"{CE_BOX} /shops — магазины и балансы\n"
+    f"{CE_IN} /addshop — подключить новый шоп\n"
+    f"{CE_PIN} /newcat Название — новый раздел товаров\n"
+    f"{CE_TIP} /setemoji — сменить эмодзи раздела\n"
+    f"{CE_UP} /update — обновить бота с GitHub\n\n"
+    f"{CE_TIP} Кнопки пропали? Отправь /start"
+)
+
+_lock = asyncio.Lock()
+pending_add: dict[int, list[dict]] = {}
+pending_clear: set[int] = set()
+pending_buy: dict[int, dict] = {}
+pending_store: dict[int, list[str]] = {}
+pending_emoji: dict[int, str] = {}
+gpt_prod_cache: dict[str, dict] = {}
+
+
+def _load_json(path: Path) -> list:
+    if not path.exists():
+        return []
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+        return data if isinstance(data, list) else []
+    except Exception as e:
+        log.exception("Failed to load %s: %s", path, e)
+        return []
+
+
+def _load_json_any(path: Path):
+    if not path.exists():
+        return None
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        log.exception("Failed to load %s", path)
+        return None
+
+
+def _save_json(path: Path, data) -> None:
+    tmp = path.with_suffix(".tmp")
+    tmp.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+    os.replace(tmp, path)
+
+
+def load_accounts() -> list[dict]:
+    data = _load_json(DATA_FILE)
+    changed = False
+    for acc in data:
+        if "days" not in acc:
+            acc["days"] = 30
+            changed = True
+    if changed:
+        _save_json(DATA_FILE, data)
+    return data
+
+def save_accounts(accounts: list[dict]) -> None:
+    _save_json(DATA_FILE, accounts)
+
+def load_cdk() -> list[dict]:
+    return _load_json(CDK_FILE)
+
+def save_cdk(data: list[dict]) -> None:
+    _save_json(CDK_FILE, data)
+
+def load_gemini() -> list[dict]:
+    return _load_json(GEMINI_FILE)
+
+def save_gemini(data: list[dict]) -> None:
+    _save_json(GEMINI_FILE, data)
+
+def load_chatgpt() -> list[dict]:
+    return _load_json(CHATGPT_FILE)
+
+def save_chatgpt(data: list[dict]) -> None:
+    _save_json(CHATGPT_FILE, data)
+
+def load_capcut() -> list[dict]:
+    return _load_json(CAPCUT_FILE)
+
+def save_capcut(data: list[dict]) -> None:
+    _save_json(CAPCUT_FILE, data)
+
+def load_autobuy() -> list[dict]:
+    return _load_json(AUTOBUY_FILE)
+
+def save_autobuy(data: list[dict]) -> None:
+    _save_json(AUTOBUY_FILE, data)
+
+
+def load_shops() -> list[dict]:
+    shops = _load_json(SHOPS_FILE)
+    if not shops and SHOP_API_KEY:
+        shops = [{"id": 1, "name": "Основной шоп", "base": SHOP_API_BASE, "key": SHOP_API_KEY, "link": ""}]
+        _save_json(SHOPS_FILE, shops)
+    return shops
+
+def save_shops(shops: list[dict]) -> None:
+    _save_json(SHOPS_FILE, shops)
+
+def get_shop(shop_id: int) -> dict | None:
+    return next((s for s in load_shops() if s.get("id") == shop_id), None)
+
+def default_shop() -> dict | None:
+    shops = load_shops()
+    return shops[0] if shops else None
+
+
+def load_custom_cats() -> list[dict]:
+    return _load_json(CATS_FILE)
+
+def save_custom_cats(cats: list[dict]) -> None:
+    _save_json(CATS_FILE, cats)
+
+def all_cats() -> dict[str, dict]:
+    cats: dict[str, dict] = dict(SHOP_CATS)
+    for c in load_custom_cats():
+        key = c.get("key")
+        if not key or key in cats:
+            continue
+        eid = c.get("emoji_id") or ID_BOX
+        cats[key] = {
+            "title": c.get("title", key),
+            "icon": eid,
+            "ce": _e(eid, "📦"),
+            "match": c.get("match", key.lower()),
+            "custom": True,
+        }
+    return cats
+
+def get_cat(cat: str) -> dict:
+    return all_cats().get(cat) or {
+        "title": cat, "icon": ID_BOX, "ce": CE_BOX, "match": cat.lower(), "custom": True,
+    }
+
+
+RAW_STORES = {
+    "gpt":    (load_chatgpt, save_chatgpt),
+    "capcut": (load_capcut,  save_capcut),
+}
+
+def store_funcs(cat: str):
+    if cat in RAW_STORES:
+        return RAW_STORES[cat]
+    p = Path(f"store_{cat}.json")
+    return (lambda: _load_json(p)), (lambda data: _save_json(p, data))
+
+
+RE_PIPE_LINE = re.compile(
+    r"^([a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,})\s*\|\s*(\S+)(?:\s*\|\s*(\S+))?$"
+)
+
+
+async def shop_api(shop: dict | None, method: str, path: str, payload: dict | None = None) -> dict:
+    if not shop or not shop.get("key"):
+        return {"success": False, "error": "Шоп не настроен. Добавь: /addshop Название | URL | КЛЮЧ"}
+    headers = {"X-API-Key": shop["key"]}
+    base = str(shop.get("base", "")).rstrip("/")
+    try:
+        timeout = aiohttp.ClientTimeout(total=30)
+        async with aiohttp.ClientSession(timeout=timeout) as sess:
+            async with sess.request(
+                method, f"{base}{path}", json=payload, headers=headers
+            ) as resp:
+                return await resp.json(content_type=None)
+    except Exception as e:
+        return {"success": False, "error": f"Сеть/API недоступен: {e}"}
+
+
+def fmt_usdt(v) -> str:
+    return f"{float(v):g}$"
