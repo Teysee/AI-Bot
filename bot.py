@@ -198,7 +198,7 @@ pending_emoji: dict[int, str] = {}     # user_id -> ключ раздела, ж�
 gpt_prod_cache: dict[str, dict] = {}   # "shop_id:product_id" -> product (снимок /api/products)
 
 
-# ─── Работа с файлами ─────────────────────────────────────────────────────
+# ─── Работа с файлами ─────────────────────────────────────────────────────────
 
 def _load_json(path: Path) -> list:
     if not path.exists():
@@ -273,7 +273,7 @@ def save_autobuy(data: list[dict]) -> None:
     _save_json(AUTOBUY_FILE, data)
 
 
-# ─── Шопы (несколько магазинов) ──────────────────────────────────────────
+# ─── Шопы (несколько магазинов) ──────────────────────────────────────────────
 
 def load_shops() -> list[dict]:
     shops = _load_json(SHOPS_FILE)
@@ -294,7 +294,7 @@ def default_shop() -> dict | None:
     return shops[0] if shops else None
 
 
-# ─── Пользовательские разделы товаров ────────────────────────────────────
+# ─── Пользовательские разделы товаров ────────────────────────────────────────
 
 def load_custom_cats() -> list[dict]:
     return _load_json(CATS_FILE)
@@ -344,7 +344,7 @@ RE_PIPE_LINE = re.compile(
 )
 
 
-# ─── Shop API ───────────────────────────────────────────────────────────────
+# ─── Shop API ─────────────────────────────────────────────────────────────────
 
 async def shop_api(shop: dict | None, method: str, path: str, payload: dict | None = None) -> dict:
     if not shop or not shop.get("key"):
@@ -492,7 +492,7 @@ def parse_accounts(text: str) -> list[dict]:
     return results
 
 
-# ─── Форматирование ─────────────────────────────────────────────────────────
+# ─── Форматирование ───────────────────────────────────────────────────────────
 
 def days_label(days: int) -> str:
     """Метка срока для использования внутри HTML-сообщений."""
@@ -525,7 +525,7 @@ def format_grok_list(accounts: list[dict]) -> str:
     return "\n".join(lines)
 
 
-# ─── Клавиатуры ─────────────────────────────────────────────────────────────
+# ─── Клавиатуры ───────────────────────────────────────────────────────────────
 
 def main_keyboard() -> ReplyKeyboardMarkup:
     # Кастомные эмодзи на кнопках через icon_custom_emoji_id (Bot API 9.4+).
@@ -639,7 +639,7 @@ def is_admin_cb(cb: CallbackQuery) -> bool:
 dp = Dispatcher()
 
 
-# ─── /start, /help ──────────────────────────────────────────────────────────
+# ─── /start, /help ────────────────────────────────────────────────────────────
 
 @dp.message(CommandStart())
 async def cmd_start(message: Message):
@@ -662,7 +662,7 @@ async def cmd_help(message: Message):
     await message.answer(HELP_TEXT, parse_mode="HTML", reply_markup=MK)
 
 
-# ─── /update — обновление с GitHub ─────────────────────────────────────────
+# ─── /update — обновление с GitHub ───────────────────────────────────────────
 
 @dp.message(Command("update"))
 async def cmd_update(message: Message):
@@ -704,7 +704,7 @@ async def cmd_update(message: Message):
         os.execv(sys.executable, [sys.executable] + sys.argv)
 
 
-# ─── /count, /list ──────────────────────────────────────────────────────────
+# ─── /count, /list ────────────────────────────────────────────────────────────
 
 @dp.message(Command("count"))
 async def cmd_count(message: Message):
@@ -801,7 +801,7 @@ async def _send_list(message: Message) -> None:
             await message.answer(chunk, parse_mode="HTML")
 
 
-# ─── /get, /use, /clear ─────────────────────────────────────────────────────
+# ─── /get, /use, /clear ───────────────────────────────────────────────────────
 
 @dp.message(Command("get"))
 async def cmd_get(message: Message, command):
@@ -912,7 +912,7 @@ async def cmd_getchar(message: Message):
     await message.answer("\n".join(lines), parse_mode="HTML", reply_markup=MK)
 
 
-# ─── /settoken ──────────────────────────────────────────────────────────────
+# ─── /settoken ────────────────────────────────────────────────────────────────
 
 @dp.message(Command("settoken"))
 async def cmd_settoken(message: Message, command):
@@ -1274,7 +1274,7 @@ async def cb_newcat(cb: CallbackQuery):
     await _create_custom_cat(cb.message, word)
 
 
-# ─── /pop, /Nday ─────────────────────────────────────────────────────────────
+# ─── /pop, /Nday ──────────────────────────────────────────────────────────────
 
 @dp.message(Command("pop"))
 async def cmd_pop(message: Message):
@@ -1397,457 +1397,6 @@ async def handle_help_button(message: Message):
     await message.answer(HELP_TEXT, parse_mode="HTML", reply_markup=MK)
 
 
-# ─── Шоп-разделы (Grok / Gemini / ChatGPT / CapCut / свои) ───────────────────
-
-def _cat_store_count(cat: str) -> str:
-    if cat == "grok":
-        return f"{len(load_accounts())} акк. | {len(load_cdk())} CDK"
-    if cat == "gemini":
-        return f"{len(load_gemini())} ссыл."
-    load_fn, _ = store_funcs(cat)
-    return f"{len(load_fn())} шт."
-
-
-def _cat_menu_text(cat: str) -> str:
-    c = get_cat(cat)
-    txt = (
-        f"{c['ce']} <b>{c['title']}</b>\n\n"
-        f"{CE_BOX} На складе: <b>{_cat_store_count(cat)}</b>"
-    )
-    watches = load_autobuy()
-    if watches:
-        total = sum(w.get("qty_left", 0) for w in watches)
-        txt += f"\n{CE_PIN} Автопокупки: <b>{len(watches)}</b> (ждём {total} шт.)"
-    return txt
-
-
-async def _send_cat_menu(message: Message, cat: str) -> None:
-    await message.answer(
-        _cat_menu_text(cat),
-        reply_markup=cat_menu_keyboard(cat, len(load_autobuy())),
-        parse_mode="HTML",
-    )
-
-
-@dp.message(F.text == "ChatGPT")
-async def handle_chatgpt_button(message: Message):
-    if not is_admin(message):
-        return
-    await _send_cat_menu(message, "gpt")
-
-
-@dp.message(F.text == "CapCut")
-async def handle_capcut_button(message: Message):
-    if not is_admin(message):
-        return
-    await _send_cat_menu(message, "capcut")
-
-
-@dp.callback_query(F.data.startswith("shop_menu:"))
-async def cb_shop_menu(cb: CallbackQuery):
-    if not is_admin_cb(cb):
-        return
-    cat = cb.data.split(":")[1]
-    await cb.answer()
-    await cb.message.edit_text(
-        _cat_menu_text(cat),
-        reply_markup=cat_menu_keyboard(cat, len(load_autobuy())),
-        parse_mode="HTML",
-    )
-
-
-@dp.callback_query(F.data.startswith("shop_buy:"))
-async def cb_shop_buy(cb: CallbackQuery):
-    if not is_admin_cb(cb):
-        return
-    cat = cb.data.split(":")[1]
-    shops = load_shops()
-    if not shops:
-        await cb.answer()
-        await cb.message.edit_text(
-            f"{CE_WARN} Нет подключённых шопов.\n"
-            f"Добавь: <code>/addshop Название | https://url | КЛЮЧ | ссылка_на_шоп</code>",
-            reply_markup=cat_menu_keyboard(cat, len(load_autobuy())), parse_mode="HTML",
-        )
-        return
-    if len(shops) == 1:
-        await cb.answer("Загружаю товары...")
-        await _show_products(cb, cat, shops[0])
-        return
-    c = get_cat(cat)
-    await cb.answer()
-    await cb.message.edit_text(
-        f"{c['ce']} <b>{c['title']} — выбери магазин:</b>",
-        reply_markup=_shops_keyboard(cat), parse_mode="HTML",
-    )
-
-
-@dp.callback_query(F.data.startswith("shop_sel:"))
-async def cb_shop_sel(cb: CallbackQuery):
-    if not is_admin_cb(cb):
-        return
-    _, cat, sid_s = cb.data.split(":")
-    shop = get_shop(int(sid_s))
-    if not shop:
-        await cb.answer("Шоп не найден.", show_alert=True)
-        return
-    await cb.answer("Загружаю товары...")
-    await _show_products(cb, cat, shop)
-
-
-async def _show_products(cb: CallbackQuery, cat: str, shop: dict) -> None:
-    c = get_cat(cat)
-    data = await shop_api(shop, "GET", "/api/products")
-    if not data.get("success"):
-        await cb.message.edit_text(
-            f"{CE_NO} Ошибка API ({escape(shop.get('name', '?'))}):\n<code>{escape(str(data.get('error')))}</code>",
-            reply_markup=cat_menu_keyboard(cat, len(load_autobuy())), parse_mode="HTML",
-        )
-        return
-    prods = cat_filter(data.get("products", []), cat)
-    if not prods:
-        await cb.message.edit_text(
-            f"{CE_EMPTY} В шопе «{escape(shop.get('name', '?'))}» нет {c['title']}-товаров.",
-            reply_markup=cat_menu_keyboard(cat, len(load_autobuy())), parse_mode="HTML",
-        )
-        return
-    bal = await shop_api(shop, "GET", "/api/balance")
-    bal_line = ""
-    if bal.get("success"):
-        bal_line = f"\nБаланс: <b>{fmt_usdt(bal.get('balance_usdt', 0))}</b>"
-
-    lines = [f"{c['ce']} <b>{c['title']} — {escape(shop.get('name', ''))}:</b>{bal_line}\n"]
-    rows = []
-    for p in prods:
-        gpt_prod_cache[f"{shop.get('id')}:{p['id']}"] = p
-        stock = p.get("stock", 0)
-        mark = CE_OK if stock > 0 else CE_EMPTY
-        lines.append(
-            f"{mark} <b>{escape(p['name'])}</b>\n"
-            f"      {fmt_usdt(p.get('price_usdt', 0))} — в наличии: <b>{stock}</b>"
-        )
-        rows.append([InlineKeyboardButton(
-            text=f"{prod_short_name(p['name'], cat)} · {stock} шт",
-            callback_data=f"shop_prod:{cat}:{shop.get('id')}:{p['id']}",
-            style=ButtonStyle.SUCCESS if stock > 0 else ButtonStyle.PRIMARY,
-            icon_custom_emoji_id=c["icon"],
-        )])
-    rows.append([InlineKeyboardButton(text="Назад", callback_data=f"shop_menu:{cat}", style=ButtonStyle.DANGER, icon_custom_emoji_id=ID_NO)])
-    await cb.message.edit_text(
-        "\n".join(lines),
-        reply_markup=InlineKeyboardMarkup(inline_keyboard=rows), parse_mode="HTML",
-    )
-
-
-@dp.callback_query(F.data.startswith("shop_prod:"))
-async def cb_shop_prod(cb: CallbackQuery):
-    if not is_admin_cb(cb):
-        return
-    _, cat, sid_s, pid_s = cb.data.split(":")
-    sid, pid = int(sid_s), int(pid_s)
-    shop = get_shop(sid)
-    if not shop:
-        await cb.answer("Шоп не найден.", show_alert=True)
-        return
-    c = get_cat(cat)
-    p = gpt_prod_cache.get(f"{sid}:{pid}")
-    if p is None:
-        data = await shop_api(shop, "GET", "/api/products")
-        for x in data.get("products", []):
-            gpt_prod_cache[f"{sid}:{x['id']}"] = x
-        p = gpt_prod_cache.get(f"{sid}:{pid}")
-    if p is None:
-        await cb.answer("Товар не найден, обнови список.", show_alert=True)
-        return
-    await cb.answer()
-    pending_buy[cb.from_user.id] = {"p": p, "cat": cat, "shop_id": sid}
-    desc = translate_desc(p.get("description", ""))
-    desc_block = f"\n<blockquote>{escape(desc)}</blockquote>\n" if desc else ""
-    await cb.message.edit_text(
-        f"{c['ce']} <b>{escape(p['name'])}</b>\n"
-        f"Магазин: {escape(shop.get('name', '?'))}\n"
-        f"Цена: {fmt_usdt(p.get('price_usdt', 0))}\n"
-        f"В наличии: <b>{p.get('stock', 0)}</b> шт.\n"
-        f"{desc_block}\n"
-        f"{CE_KBD} <b>Отправь количество сообщением</b> (1-100):",
-        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="Назад", callback_data=f"shop_sel:{cat}:{sid}", style=ButtonStyle.DANGER, icon_custom_emoji_id=ID_NO)],
-        ]),
-        parse_mode="HTML",
-    )
-
-
-def _buy_confirm_keyboard(shop: dict | None = None) -> InlineKeyboardMarkup:
-    rows = [
-        [InlineKeyboardButton(text="Купить сейчас", callback_data="shop_now",  style=ButtonStyle.SUCCESS, icon_custom_emoji_id=ID_OK)],
-        [InlineKeyboardButton(text="Автопокупка (когда появится)", callback_data="shop_auto", style=ButtonStyle.PRIMARY, icon_custom_emoji_id=ID_PIN)],
-    ]
-    link = (shop or {}).get("link")
-    if link:
-        rows.append([InlineKeyboardButton(text="Пополнить баланс в шопе", url=link, style=ButtonStyle.PRIMARY, icon_custom_emoji_id=ID_UP)])
-    rows.append([InlineKeyboardButton(text="Отмена", callback_data="shop_cancelbuy", style=ButtonStyle.DANGER, icon_custom_emoji_id=ID_NO)])
-    return InlineKeyboardMarkup(inline_keyboard=rows)
-
-
-@dp.callback_query(F.data == "shop_now")
-async def cb_shop_now(cb: CallbackQuery):
-    if not is_admin_cb(cb):
-        return
-    info = pending_buy.get(cb.from_user.id)
-    if not info or "qty" not in info:
-        await cb.answer("Заказ устарел — начни заново.", show_alert=True)
-        return
-    shop = get_shop(info.get("shop_id", 0)) or default_shop()
-    if not shop:
-        await cb.answer("Шоп не найден.", show_alert=True)
-        return
-    await cb.answer("Покупаю...")
-    p, qty = info["p"], info["qty"]
-    total_vnd  = p.get("price_vnd", 0) * qty
-    total_usdt = p.get("price_usdt", 0) * qty
-    currency, bal = await pick_currency(shop, total_vnd, total_usdt)
-    if currency is None:
-        err = bal.get("error")
-        if err:
-            msg = f"{CE_NO} Ошибка API:\n<code>{escape(str(err))}</code>"
-        else:
-            msg = (
-                f"{CE_WARN} <b>Недостаточно средств в «{escape(shop.get('name', ''))}».</b>\n"
-                f"Нужно: {fmt_usdt(total_usdt)}\n"
-                f"Баланс: {fmt_usdt(bal.get('balance_usdt', 0))}"
-            )
-            if not shop.get("link"):
-                msg += f"\n\n{CE_TIP} Добавь ссылку шопа (/shoplink {shop.get('id')} ссылка) — появится кнопка пополнения."
-        await cb.message.edit_text(msg, reply_markup=_buy_confirm_keyboard(shop), parse_mode="HTML")
-        return
-
-    res = await shop_api(shop, "POST", "/api/buy", {
-        "product_id": p["id"], "quantity": qty, "currency": currency,
-    })
-    if not res.get("success"):
-        await cb.message.edit_text(
-            f"{CE_NO} Покупка не прошла:\n<code>{escape(str(res.get('error')))}</code>\n\n"
-            f"{CE_TIP} Можно включить автопокупку — куплю, как только появится.",
-            reply_markup=_buy_confirm_keyboard(shop), parse_mode="HTML",
-        )
-        return
-
-    pending_buy.pop(cb.from_user.id, None)
-    order = res.get("order", {})
-    items = res.get("items", [])
-    nb = res.get("new_balance")
-    head = (
-        f"{CE_OK} <b>Куплено: {escape(str(order.get('product', p['name'])))}</b>\n"
-        f"Магазин: {escape(shop.get('name', '?'))}\n"
-        f"Количество: <b>{order.get('total_items', len(items))}</b>"
-        + (f" (бонус +{order.get('bonus')})" if order.get("bonus") else "")
-        + f"\nЦена: <b>{order.get('total_price')}</b> {order.get('currency', currency.upper())}"
-        + (f"\nНовый баланс: <b>{nb}</b>" if nb is not None else "")
-    )
-    await cb.message.edit_text(head, parse_mode="HTML")
-    ce = get_cat(info.get("cat", "gpt"))["ce"]
-    await send_items_chunks(
-        lambda t: cb.message.answer(t, parse_mode="HTML"),
-        f"{ce} <b>Аккаунты:</b>", items,
-    )
-
-
-@dp.callback_query(F.data == "shop_auto")
-async def cb_shop_auto(cb: CallbackQuery):
-    if not is_admin_cb(cb):
-        return
-    info = pending_buy.pop(cb.from_user.id, None)
-    if not info or "qty" not in info:
-        await cb.answer("Заказ устарел — начни заново.", show_alert=True)
-        return
-    p, qty, cat = info["p"], info["qty"], info.get("cat", "gpt")
-    sid = info.get("shop_id") or (default_shop() or {}).get("id", 1)
-    async with _lock:
-        watches = load_autobuy()
-        watches.append({
-            "product_id": p["id"],
-            "name": p["name"],
-            "cat": cat,
-            "shop_id": sid,
-            "qty_left": qty,
-            "chat_id": cb.message.chat.id,
-            "notified_low_balance": False,
-        })
-        save_autobuy(watches)
-    await cb.answer("Автопокупка создана.")
-    ce = get_cat(cat)["ce"]
-    shop = get_shop(sid)
-    sname = escape(shop.get("name", "?")) if shop else "?"
-    await cb.message.edit_text(
-        f"{CE_PIN} <b>Автопокупка создана:</b>\n"
-        f"{ce} {escape(p['name'])} × <b>{qty}</b> ({sname})\n\n"
-        f"Проверяю наличие каждые {AUTOBUY_INTERVAL} сек. "
-        f"Как только появится — куплю и пришлю сюда.",
-        parse_mode="HTML",
-    )
-
-
-@dp.callback_query(F.data == "shop_cancelbuy")
-async def cb_shop_cancelbuy(cb: CallbackQuery):
-    if not is_admin_cb(cb):
-        return
-    pending_buy.pop(cb.from_user.id, None)
-    await cb.answer("Отменено.")
-    await cb.message.edit_text(f"{CE_NO} Покупка отменена.", parse_mode="HTML")
-
-
-@dp.callback_query(F.data.startswith("shop_store:"))
-async def cb_shop_store(cb: CallbackQuery):
-    if not is_admin_cb(cb):
-        return
-    cat = cb.data.split(":")[1]
-    c = get_cat(cat)
-
-    # Grok: хранилище = выбор срока подписки (аккаунты + CDK)
-    if cat == "grok":
-        await cb.answer()
-        text, kb = _grok_days_view()
-        await cb.message.edit_text(text, reply_markup=kb, parse_mode="HTML")
-        return
-
-    # Gemini: выдать ссылку
-    if cat == "gemini":
-        async with _lock:
-            gemini_lst = load_gemini()
-            if not gemini_lst:
-                await cb.answer()
-                await cb.message.edit_text(
-                    f"{CE_EMPTY} Нет Gemini-ссылок в хранилище.\n\n"
-                    f"{CE_TIP} Кинь ссылки serviceactivation.google.com в чат — добавятся сами.",
-                    reply_markup=cat_menu_keyboard(cat, len(load_autobuy())), parse_mode="HTML",
-                )
-                return
-            item = gemini_lst.pop(0)
-            save_gemini(gemini_lst)
-        await cb.answer()
-        await cb.message.edit_text(
-            f"{CE_GEMINI} <b>Gemini:</b>\n{item.get('url', '')}\n\n"
-            f"<i>Осталось: {len(gemini_lst)} шт.</i>",
-            parse_mode="HTML",
-        )
-        return
-
-    # ChatGPT / CapCut / свои разделы: выдать аккаунт-строку
-    load_fn, save_fn = store_funcs(cat)
-    async with _lock:
-        store = load_fn()
-        if not store:
-            await cb.answer()
-            await cb.message.edit_text(
-                f"{CE_EMPTY} {c['title']}-склад пустой.\n\n"
-                f"{CE_TIP} Кинь аккаунты в чат в формате:\n"
-                f"<code>mail | password</code> или <code>mail | password | код</code>",
-                reply_markup=cat_menu_keyboard(cat, len(load_autobuy())), parse_mode="HTML",
-            )
-            return
-        item = store.pop(0)
-        save_fn(store)
-    await cb.answer()
-    await cb.message.edit_text(
-        f"{CE_OUT} <b>{c['title']} аккаунт:</b>\n"
-        f"<code>{escape(item.get('raw', ''))}</code>\n\n"
-        f"<i>Осталось: {len(store)} шт.</i>",
-        parse_mode="HTML",
-    )
-
-
-@dp.callback_query(F.data.startswith("shop_watch:"))
-async def cb_shop_watch(cb: CallbackQuery):
-    if not is_admin_cb(cb):
-        return
-    cat = cb.data.split(":")[1]
-    await cb.answer()
-    watches = load_autobuy()
-    if not watches:
-        await cb.message.edit_text(
-            _cat_menu_text(cat),
-            reply_markup=cat_menu_keyboard(cat, 0), parse_mode="HTML",
-        )
-        return
-    lines = [f"{CE_PIN} <b>Активные автопокупки:</b>\n"]
-    rows = []
-    for i, w in enumerate(watches):
-        ce = get_cat(w.get("cat", "gpt"))["ce"]
-        s = get_shop(w.get("shop_id", 1))
-        sn = f" · {escape(s.get('name', ''))}" if s else ""
-        lines.append(f"{i + 1}. {ce} {escape(w.get('name', '?'))}{sn} — ждём <b>{w.get('qty_left', 0)}</b> шт.")
-        rows.append([InlineKeyboardButton(
-            text=f"Убрать №{i + 1}", callback_data=f"shop_unwatch:{cat}:{i}",
-            style=ButtonStyle.DANGER, icon_custom_emoji_id=ID_TRASH,
-        )])
-    rows.append([InlineKeyboardButton(text="Назад", callback_data=f"shop_menu:{cat}", style=ButtonStyle.PRIMARY, icon_custom_emoji_id=ID_HOME)])
-    await cb.message.edit_text(
-        "\n".join(lines),
-        reply_markup=InlineKeyboardMarkup(inline_keyboard=rows), parse_mode="HTML",
-    )
-
-
-@dp.callback_query(F.data.startswith("shop_unwatch:"))
-async def cb_shop_unwatch(cb: CallbackQuery):
-    if not is_admin_cb(cb):
-        return
-    _, cat, idx_s = cb.data.split(":")
-    idx = int(idx_s)
-    async with _lock:
-        watches = load_autobuy()
-        removed = watches.pop(idx) if 0 <= idx < len(watches) else None
-        save_autobuy(watches)
-    await cb.answer("Убрано." if removed else "Уже нет.")
-    cb2 = cb.model_copy(update={"data": f"shop_watch:{cat}"})
-    await cb_shop_watch(cb2)
-
-
-# ─── Добавление аккаунтов "mail | pass [| код]" — выбор раздела ──────────────
-
-@dp.callback_query(F.data.startswith("store_as:"))
-async def cb_store_as(cb: CallbackQuery):
-    if not is_admin_cb(cb):
-        return
-    cat = cb.data.split(":")[1]
-    lines_raw = pending_store.pop(cb.from_user.id, None)
-    if not lines_raw:
-        await cb.answer("Устарело — кинь аккаунты заново.", show_alert=True)
-        return
-    await cb.answer()
-
-    if cat == "grok":
-        # первые две части — email и пароль
-        parsed = []
-        for raw in lines_raw:
-            parts = [s.strip() for s in raw.split("|")]
-            if len(parts) >= 2:
-                parsed.append({"email": parts[0], "password": parts[1]})
-        if not parsed:
-            await cb.message.edit_text(f"{CE_NO} Не удалось разобрать строки.", parse_mode="HTML")
-            return
-        pending_add[cb.from_user.id] = parsed
-        await cb.message.edit_text(
-            f"{CE_IN} Найдено <b>{len(parsed)}</b> Grok-аккаунт(ов). Выбери срок подписки:",
-            reply_markup=add_days_keyboard(), parse_mode="HTML",
-        )
-        return
-
-    c = get_cat(cat)
-    load_fn, save_fn = store_funcs(cat)
-    async with _lock:
-        store = load_fn()
-        existing = {a.get("raw", "").lower() for a in store}
-        added, dupes = 0, 0
-        for raw in lines_raw:
-            if raw.lower() in existing:
-                dupes += 1
-            else:
-                store.append({"raw": raw})
-                existing.add(raw.lower())
-                added += 1
-        save_fn(store)
-    msg = f"{c['ce']} {c['title']} добавлено: <b>{added}</b> шт."
-    if dupes:
-        msg += f"\n{CE_WARN} Дублей: {dupes}"
-    msg += f"\n<i>Всего {c['title']}: {len(store)} шт.</i>"
-    await cb.message.edit_text(msg, parse_mode="HTML
+# ─── Продолжение кода бота — в файле bot_part2.py ───────────────────────
+_PART2 = Path(__file__).resolve().with_name("bot_part2.py")
+exec(compile(_PART2.read_text(encoding="utf-8"), str(_PART2), "exec"))
