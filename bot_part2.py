@@ -600,7 +600,6 @@ async def cb_add_days(cb: CallbackQuery):
     await cb.message.edit_text(msg, parse_mode="HTML")
 
 
-
 @dp.callback_query(F.data == "add_cancel")
 async def cb_add_cancel(cb: CallbackQuery):
     if not is_admin_cb(cb):
@@ -956,6 +955,129 @@ async def shop_loop(bot: Bot) -> None:
         except Exception:
             log.exception("Shop loop tick failed")
         await asyncio.sleep(AUTOBUY_INTERVAL)
+
+
+# ─── Reseller API (/v1) — переходник ────────────────────────────────────────────────
+
+def _shop_api_type(shop: dict) -> str:
+    """Тип API шопа: 'legacy' (первый шоп) или 'reseller' (/v1/..., ключ rsk_...)."""
+    t = shop.get("api_type")
+    if t in ("legacy", "reseller"):
+        return t
+    return "reseller" if str(shop.get("key", "")).startswith("rsk_") else "legacy"
+
+
+def _strip_html(text: str) -> str:
+    """Убрать HTML-теги из описаний Reseller API."""
+    from html import unescape
+    if not text:
+        return ""
+    text = re.sub(r"<br\s*/?>", "\n", text)
+    text = re.sub(r"<[^>]+>", "", text)
+    return unescape(text).strip()
+
+
+def _reseller_err(data) -> str:
+    if isinstance(data, dict):
+        d = data.get("detail")
+        if isinstance(d, str):
+            return d
+        if d is not None:
+            return json.dumps(d, ensure_ascii=False)[:300]
+    return str(data)[:300]
+
+
+async def _reseller_api(shop: dict, method: str, path: str, payload: dict | None = None) -> dict:
+    """Переходник Reseller API (/v1/...) -> формат ответов первого шопа."""
+    base = str(shop.get("base", "")).rstrip("/")
+    headers = {"Authorization": f"Bearer {shop['key']}"}
+
+    async def call(m: str, p: str, body: dict | None = None):
+        timeout = aiohttp.ClientTimeout(total=30)
+        async with aiohttp.ClientSession(timeout=timeout) as sess:
+            async with sess.request(m, f"{base}{p}", json=body, headers=headers) as resp:
+                return resp.status, await resp.json(content_type=None)
+
+    try:
+        if method == "GET" and path == "/api/balance":
+            status, data = await call("GET", "/v1/me")
+            if status != 200 or not isinstance(data, dict):
+                return {"success": False, "error": _reseller_err(data)}
+            return {
+                "success": True,
+                "username": data.get("name") or data.get("telegram_username", "?"),
+                "balance_usdt": float(data.get("balance") or 0),
+                "balance_vnd": -1,
+            }
+
+        if method == "GET" and path == "/api/products":
+            status, data = await call("GET", "/v1/products")
+            if status != 200 or not isinstance(data, dict):
+                return {"success": False, "error": _reseller_err(data)}
+            prods = []
+            for p in data.get("products", []):
+                stock = p.get("stock")
+                desc = _strip_html(p.get("description") or "")
+                if p.get("inputs"):
+                    need = ", ".join(str(i.get("name", "?")) for i in p["inputs"])
+                    desc = f"{desc}\n[!] Шоп требует при заказе: {need}".strip()
+                prods.append({
+                    "id": p.get("id"),
+                    "name": p.get("name", "?"),
+                    "price_usdt": float(p.get("your_unit_price") or p.get("retail_price") or 0),
+                    "price_vnd": 0,
+                    "stock": 999 if stock is None else int(stock),
+                    "description": desc,
+                })
+            return {"success": True, "products": prods}
+
+        if method == "POST" and path == "/api/buy":
+            payload = payload or {}
+            status, data = await call("POST", "/v1/orders", {
+                "product_id": payload.get("product_id"),
+                "quantity": payload.get("quantity", 1),
+            })
+            if status not in (200, 201) or not isinstance(data, dict) or "order_id" not in data:
+                return {"success": False, "error": _reseller_err(data)}
+            items = [str(c) for c in (data.get("delivered_codes") or [])]
+            if not items:
+                items = [
+                    f"Заказ #{data.get('order_id')} принят (статус: {data.get('status')}). "
+                    f"Коды придут позже — проверь заказ в шопе."
+                ]
+            instr = _strip_html(data.get("delivery_instructions") or "")
+            if instr:
+                items.append(f"Инструкция:\n{instr}")
+            nb = None
+            st_me, me = await call("GET", "/v1/me")
+            if st_me == 200 and isinstance(me, dict):
+                nb = f"{float(me.get('balance') or 0):g}$"
+            return {
+                "success": True,
+                "order": {
+                    "product": data.get("product_name", ""),
+                    "total_items": data.get("delivered_count") or data.get("quantity", 0),
+                    "total_price": data.get("amount"),
+                    "currency": "USD",
+                },
+                "items": items,
+                "new_balance": nb,
+            }
+
+        status, data = await call(method, path, payload)
+        return data if isinstance(data, dict) else {"success": False, "error": str(data)[:300]}
+    except Exception as e:
+        return {"success": False, "error": f"Сеть/API недоступен: {e}"}
+
+
+_legacy_shop_api = shop_api
+
+
+async def shop_api(shop: dict | None, method: str, path: str, payload: dict | None = None) -> dict:
+    """Роутер: шопы с Reseller API (ключ rsk_...) идут через переходник."""
+    if shop and shop.get("key") and _shop_api_type(shop) == "reseller":
+        return await _reseller_api(shop, method, path, payload)
+    return await _legacy_shop_api(shop, method, path, payload)
 
 
 # ─── Запуск ───────────────────────────────────────────────────────────────────
