@@ -1,0 +1,56 @@
+async def shop_loop(bot: Bot) -> None:
+    log.info("Shop loop started (interval %ss)", AUTOBUY_INTERVAL)
+    while True:
+        try:
+            for shop in load_shops():
+                data = await shop_api(shop, "GET", "/api/products")
+                if data.get("success"):
+                    products = data.get("products", [])
+                    await _check_new_products(bot, shop, products)
+                    await _autobuy_tick(bot, shop, products)
+        except Exception:
+            log.exception("Shop loop tick failed")
+        await asyncio.sleep(AUTOBUY_INTERVAL)
+
+
+# ─── Адаптеры API магазинов (Reseller /v1, Buyer tgb_) — в bot_part3.py ──────────────────────────────
+
+_PART3 = Path(__file__).resolve().with_name("bot_part3.py")
+exec(compile(_PART3.read_text(encoding="utf-8"), str(_PART3), "exec"))
+
+
+# ─── Запуск ──────────────────────────────
+
+async def main():
+    bot = Bot(token=BOT_TOKEN)
+    log.info("Bot starting. Admin ID: %s", ADMIN_ID)
+
+    await bot.set_my_commands([
+        BotCommand(command="start",    description="🏠 Главное меню"),
+        BotCommand(command="list",     description="📋 Все Grok-аккаунты"),
+        BotCommand(command="count",    description="📊 Статистика склада"),
+        BotCommand(command="pop",      description="📦 Выдать Grok (с выбором)"),
+        BotCommand(command="3day",     description="⚡ Выдать Grok 3-дневный"),
+        BotCommand(command="7day",     description="📅 Выдать Grok 7-дневный"),
+        BotCommand(command="14day",    description="🌟 Выдать Grok 14-дневный"),
+        BotCommand(command="30day",    description="👑 Выдать Grok 30-дневный"),
+        BotCommand(command="use",      description="🗑 Удалить Grok по номеру"),
+        BotCommand(command="clear",    description="⚠️ Очистить Grok-склад"),
+        BotCommand(command="shops",    description="🏪 Магазины и балансы"),
+        BotCommand(command="addshop",  description="➕ Подключить шоп"),
+        BotCommand(command="renameshop", description="📝 Переименовать шоп"),
+        BotCommand(command="newcat",   description="🆕 Новый раздел товаров"),
+        BotCommand(command="setemoji", description="😎 Эмодзи раздела"),
+        BotCommand(command="update",   description="⬆️ Обновить бота с GitHub"),
+        BotCommand(command="settoken",  description="🔑 Сменить токен бота"),
+        BotCommand(command="setapikey", description="🛒 Задать API-ключ шопа"),
+        BotCommand(command="help",      description="❓ Помощь"),
+    ])
+    await bot.set_chat_menu_button(menu_button=MenuButtonCommands())
+    asyncio.create_task(shop_loop(bot))
+    log.info("Commands registered. Starting polling...")
+    await dp.start_polling(bot)
+
+
+if __name__ == "__main__":
+    asyncio.run(main())
