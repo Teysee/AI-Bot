@@ -1,5 +1,6 @@
 # ─── AI-Bot: часть 3 — адаптеры API магазинов ──────────────────────────────
-# Legacy (X-API-Key), Reseller API (/v1, ключ rsk_...), Buyer API (ключ tgb_...)
+# Legacy (X-API-Key), Reseller API (/v1, ключ rsk_...), Buyer API (ключ tgb_...),
+# Dorin API (ключ dk_..., X-Api-Key, /api/v1)
 
 import uuid
 import zlib
@@ -8,15 +9,17 @@ import zlib
 # ─── Reseller API (/v1) — переходник ──────────────────────────────
 
 def _shop_api_type(shop: dict) -> str:
-    """Тип API шопа: 'legacy', 'reseller' (rsk_...) или 'tgbuyer' (tgb_...)."""
+    """Тип API шопа: 'legacy', 'reseller' (rsk_...), 'tgbuyer' (tgb_...) или 'dorin' (dk_...)."""
     t = shop.get("api_type")
-    if t in ("legacy", "reseller", "tgbuyer"):
+    if t in ("legacy", "reseller", "tgbuyer", "dorin"):
         return t
     key = str(shop.get("key", ""))
     if key.startswith("rsk_"):
         return "reseller"
     if key.startswith("tgb_"):
         return "tgbuyer"
+    if key.startswith("dk_"):
+        return "dorin"
     return "legacy"
 
 
@@ -142,9 +145,15 @@ def _tgb_err(data) -> str:
 
 
 async def _tgbuyer_api(shop: dict, method: str, path: str, payload: dict | None = None) -> dict:
-    """Переходник Buyer API (/api/telegram-buyer/...) -> формат первого шопа."""
+    """Переходник Buyer API (/api[/v2]/telegram-buyer/...) -> формат первого шопа."""
     base = str(shop.get("base", "")).rstrip("/")
-    if not base.endswith("/api/telegram-buyer"):
+    if "/api/v2/telegram-buyer" in base:
+        pass
+    elif base.endswith("/api/telegram-buyer"):
+        pass
+    elif "canboso.com" in base.lower():
+        base += "/api/v2/telegram-buyer"
+    else:
         base += "/api/telegram-buyer"
     headers = {"Authorization": f"Bearer {shop['key']}"}
 
@@ -235,6 +244,141 @@ async def _tgbuyer_api(shop: dict, method: str, path: str, payload: dict | None 
         return {"success": False, "error": f"Сеть/API недоступен: {e}"}
 
 
+_dorin_ids: dict[str, str] = {}
+
+
+def _dorin_num_id(sid, sku) -> int:
+    num = zlib.crc32(str(sku).encode("utf-8")) & 0x7FFFFFFF
+    _dorin_ids[f"{sid}:{num}"] = str(sku)
+    return num
+
+
+def _dorin_err(data) -> str:
+    if isinstance(data, dict):
+        for k in ("message", "error", "detail"):
+            if data.get(k):
+                v = data[k]
+                return v if isinstance(v, str) else json.dumps(v, ensure_ascii=False)[:300]
+    return str(data)[:300]
+
+
+def _dorin_list(data):
+    if isinstance(data, list):
+        return data
+    if isinstance(data, dict):
+        for k in ("products", "items", "data"):
+            if isinstance(data.get(k), list):
+                return data[k]
+    return []
+
+
+def _dorin_num(p: dict, keys: tuple[str, ...], default=0):
+    for k in keys:
+        if p.get(k) is not None:
+            try:
+                return float(p[k])
+            except (TypeError, ValueError):
+                pass
+    return default
+
+
+async def _dorin_api(shop: dict, method: str, path: str, payload: dict | None = None) -> dict:
+    """Переходник Dorin API (/api/v1, X-Api-Key, sku) -> формат первого шопа."""
+    base = str(shop.get("base", "")).rstrip("/")
+    if not base.endswith("/api/v1"):
+        base += "/api/v1"
+    headers = {"X-Api-Key": shop["key"]}
+
+    async def call(m: str, p: str, body: dict | None = None):
+        timeout = aiohttp.ClientTimeout(total=30)
+        async with aiohttp.ClientSession(timeout=timeout) as sess:
+            async with sess.request(m, f"{base}{p}", json=body, headers=headers) as resp:
+                return resp.status, await resp.json(content_type=None)
+
+    try:
+        if method == "GET" and path == "/api/balance":
+            status, data = await call("GET", "/balance")
+            if status != 200 or not isinstance(data, dict):
+                return {"success": False, "error": _dorin_err(data)}
+            if data.get("success") is False:
+                return {"success": False, "error": _dorin_err(data)}
+            bal = _dorin_num(data, ("balance", "balance_usd", "balance_usdt", "usd", "amount"))
+            return {
+                "success": True,
+                "username": data.get("username") or data.get("name") or shop.get("name", "?"),
+                "balance_usdt": bal,
+                "balance_vnd": -1,
+            }
+
+        if method == "GET" and path == "/api/products":
+            status, data = await call("GET", "/products")
+            if status != 200:
+                return {"success": False, "error": _dorin_err(data)}
+            sid = shop.get("id")
+            prods = []
+            for p in _dorin_list(data):
+                if not isinstance(p, dict):
+                    continue
+                sku = p.get("sku") or p.get("id") or p.get("code")
+                if sku is None:
+                    continue
+                stock = _dorin_num(p, ("stock", "available", "qty", "quantity", "count"), 999)
+                price = _dorin_num(p, ("price", "price_usd", "price_usdt", "your_price", "amount"))
+                prods.append({
+                    "id": _dorin_num_id(sid, sku),
+                    "name": str(p.get("name") or p.get("title") or sku),
+                    "price_usdt": price,
+                    "price_vnd": 0,
+                    "stock": int(stock),
+                    "description": str(p.get("description") or p.get("sku") or ""),
+                })
+            return {"success": True, "products": prods}
+
+        if method == "POST" and path == "/api/buy":
+            payload = payload or {}
+            sid = shop.get("id")
+            sku = _dorin_ids.get(f"{sid}:{payload.get('product_id')}")
+            if sku is None:
+                st, d = await call("GET", "/products")
+                if st == 200:
+                    for p in _dorin_list(d):
+                        if isinstance(p, dict):
+                            _dorin_num_id(sid, p.get("sku") or p.get("id") or p.get("code"))
+                sku = _dorin_ids.get(f"{sid}:{payload.get('product_id')}")
+            if sku is None:
+                return {"success": False, "error": "Товар не найден — открой список товаров заново."}
+            status, data = await call("POST", "/buy", {
+                "sku": sku,
+                "quantity": payload.get("quantity", 1),
+            })
+            if status not in (200, 201) or not isinstance(data, dict):
+                return {"success": False, "error": _dorin_err(data)}
+            if data.get("success") is False:
+                return {"success": False, "error": _dorin_err(data)}
+            items = [str(c) for c in (data.get("codes") or data.get("items") or data.get("keys") or [])]
+            if not items:
+                items = [f"Заказ принят (sku {sku}) — проверь выдачу в шопе."]
+            nb = data.get("balance")
+            if nb is None and isinstance(data.get("new_balance"), (int, float, str)):
+                nb = data.get("new_balance")
+            return {
+                "success": True,
+                "order": {
+                    "product": data.get("name") or sku,
+                    "total_items": data.get("quantity") or len(items),
+                    "total_price": data.get("amount") or data.get("total"),
+                    "currency": "USD",
+                },
+                "items": items,
+                "new_balance": f"{nb}$" if nb is not None else None,
+            }
+
+        status, data = await call(method, path.replace("/api", "", 1), payload)
+        return data if isinstance(data, dict) else {"success": False, "error": str(data)[:300]}
+    except Exception as e:
+        return {"success": False, "error": f"Сеть/API недоступен: {e}"}
+
+
 _legacy_shop_api = shop_api
 
 
@@ -246,4 +390,6 @@ async def shop_api(shop: dict | None, method: str, path: str, payload: dict | No
             return await _reseller_api(shop, method, path, payload)
         if t == "tgbuyer":
             return await _tgbuyer_api(shop, method, path, payload)
+        if t == "dorin":
+            return await _dorin_api(shop, method, path, payload)
     return await _legacy_shop_api(shop, method, path, payload)
