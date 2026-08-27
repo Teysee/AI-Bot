@@ -1,3 +1,4 @@
+@dp.message(F.text == "Магазины")
 async def handle_mall_button(message: Message):
     if not is_admin(message):
         return
