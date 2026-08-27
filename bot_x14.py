@@ -128,7 +128,7 @@ def _mall_shops_view() -> tuple[str, InlineKeyboardMarkup]:
     return text, InlineKeyboardMarkup(inline_keyboard=rows)
 
 
-@dp.message(F.text == "Магазины")
+# Хендлер кнопки «Магазины» объявлен и зарегистрирован в bot_x15.py
 
 # continue bot_x15.py
 _NEXT = Path(__file__).resolve().with_name('bot_x15.py')
