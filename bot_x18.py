@@ -21,6 +21,7 @@ AUTOBUY_RVN_PER_ITEM = 1.0  # Roboticvn: 1 запрос на товар раз �
 
 async def _autobuy_pass(bot: Bot, next_at: dict) -> None:
     """Один проход: магазины с активными автопокупками, у каждого — свой темп опроса."""
+    autobuy_diag["_pass"] = time.time()
     watches = load_autobuy()
     for shop in load_shops() if watches else []:
         sid = shop.get("id")
@@ -86,6 +87,7 @@ async def main():
         BotCommand(command="renameshop", description="📝 Переименовать шоп"),
         BotCommand(command="newcat",   description="🆕 Новый раздел товаров"),
         BotCommand(command="setemoji", description="😎 Эмодзи раздела"),
+        BotCommand(command="autostatus", description="🔎 Проверка автопокупок"),
         BotCommand(command="update",   description="⬆️ Обновить бота с GitHub"),
         BotCommand(command="settoken",  description="🔑 Сменить токен бота"),
         BotCommand(command="setapikey", description="🛒 Задать API-ключ шопа"),

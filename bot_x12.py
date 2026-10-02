@@ -129,6 +129,56 @@ async def cb_shop_watch(cb: CallbackQuery):
         reply_markup=InlineKeyboardMarkup(inline_keyboard=rows), parse_mode="HTML",
     )
 
+
+# Диагностика автопокупки: что бот видел при последней проверке каждого товара.
+# Заполняют autobuy_loop (_autobuy_pass) и _autobuy_tick; показывает /autostatus.
+autobuy_diag: dict = {}  # "_pass" -> ts; "sid:product_id" -> {"ts", "found", "stock"}
+
+
+def _ago(ts) -> str:
+    if not ts:
+        return "ни разу"
+    s = int(time.time() - ts)
+    return f"{s} с назад" if s < 120 else f"{s // 60} мин назад"
+
+
+@dp.message(Command("autostatus"))
+async def cmd_autostatus(message: Message):
+    if not is_admin(message):
+        return
+    watches = load_autobuy()
+    lines = [f"{CE_PIN} <b>Автопокупки — диагностика</b>"]
+    last_pass = autobuy_diag.get("_pass")
+    alive = last_pass and time.time() - last_pass < 30
+    lines.append(f"Цикл автопокупки: {'работает' if alive else 'НЕ работает'}, последний проход {_ago(last_pass)}")
+    if not watches:
+        lines.append("\nАктивных автопокупок нет.")
+    for i, w in enumerate(watches, 1):
+        sid = w.get("shop_id", 1)
+        shop = get_shop(sid)
+        sname = shop.get("name", "?") if shop else f"шоп №{sid} не найден!"
+        d = autobuy_diag.get(f"{sid}:{w.get('product_id')}") or {}
+        if not d:
+            seen = "ещё не проверялся"
+        elif not d.get("found"):
+            seen = "товар НЕ найден в ответе магазина (ID устарел? пересоздай автопокупку)"
+        else:
+            st = d.get("stock", 0)
+            seen = "есть в наличии" if st >= 999 else f"в наличии {st} шт"
+        lines.append(
+            f"\n{i}. {escape(w.get('name', '?'))} ({escape(sname)}) — ждём <b>{w.get('qty_left', 0)}</b>\n"
+            f"   проверен {_ago(d.get('ts'))} · {seen}"
+        )
+        if w.get("last_error"):
+            lines.append(f"   последняя ошибка: <code>{escape(str(w['last_error'])[:200])}</code>")
+        if w.get("notified_low_balance"):
+            lines.append("   ⚠️ не хватало баланса")
+        if shop and _shop_api_type(shop) == "roboticvn":
+            left = _rvn_st(sid)["cooldown"] - time.time()
+            if left > 0:
+                lines.append(f"   ⏸ магазин ограничил запросы — пауза ещё {int(left)} с")
+    await message.answer("\n".join(lines), parse_mode="HTML", reply_markup=MK)
+
 # continue bot_x13.py
 _NEXT = Path(__file__).resolve().with_name('bot_x13.py')
 exec(compile(_NEXT.read_text(encoding='utf-8'), str(_NEXT), 'exec'))

@@ -613,7 +613,8 @@ async def _rvn_api(shop: dict, method: str, path: str, payload: dict | None = No
                         if status == 429:
                             st["cooldown"] = time.time() + _RVN_COOLDOWN
                             log.warning("Roboticvn (shop %s): 429 on autobuy check, pause %ss", sid, _RVN_COOLDOWN)
-                            break
+                            # свежих данных нет — не выдаём старые за свежие (автопокупка/диагностика)
+                            return {"success": False, "error": "Roboticvn: лимит запросов, пауза."}
                         if _rvn_ok(status, data):
                             st["cards"][pid] = (time.time(), data.get("data") or {})
                     if st["products"] is not None:

@@ -84,6 +84,7 @@ async def _autobuy_tick(bot: Bot, shop: dict, products: list[dict]) -> None:
         w_ce = get_cat(w.get("cat", "gpt"))["ce"]
         p = stock_map.get(w.get("product_id"))
         stock = p.get("stock", 0) if p else 0
+        autobuy_diag[f"{sid}:{w.get('product_id')}"] = {"ts": time.time(), "found": p is not None, "stock": stock}
         if not p or stock <= 0:
             remaining.append(w)
             continue
