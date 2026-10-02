@@ -42,6 +42,10 @@ bash install-grok.sh
 - Склад: `/list`, `/count`, `/get N`, `/pop`, `/use N…`, `/clear` (+ `/yes`, `/no`), `/getchar`
 - Быстрая выдача: `/3day`, `/7day`, `/14day`, `/30day`
 - Магазины: `/shops`, `/addshop`, `/renameshop`, `/delshop`, `/shoplink`
+  - Поддерживаемые API (тип определяется по префиксу ключа): legacy (`X-API-Key`),
+    Reseller (`rsk_…`), Buyer (`tgb_…`), Dorin (`dk_…`), Roboticvn (`apk_…`, `/api/v2`).
+  - Roboticvn: `/addshop apk_… roboticvn`. Каждый вариант товара — отдельная позиция;
+    каталог (~60 карточек) кэшируется на 2 минуты из‑за лимита 120 запросов/мин.
 - Категории: `/newcat`, `/delcat`, `/setemoji`, `/skip`
 - Прочее: `/start`, `/help`, `/update`, `/settoken`, `/setapikey`
 

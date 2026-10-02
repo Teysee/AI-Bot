@@ -1,7 +1,8 @@
 # ─── AI-Bot: часть 3 — адаптеры API магазинов ──────────────────────────────
 # Legacy (X-API-Key), Reseller API (/v1, ключ rsk_...), Buyer API (ключ tgb_...),
-# Dorin API (ключ dk_..., X-Api-Key, /api/v1)
+# Dorin API (ключ dk_..., X-Api-Key, /api/v1), Roboticvn (ключ apk_..., x-api-key, /api/v2)
 
+import time
 import uuid
 import zlib
 
@@ -9,9 +10,10 @@ import zlib
 # ─── Reseller API (/v1) — переходник ──────────────────────────────
 
 def _shop_api_type(shop: dict) -> str:
-    """Тип API шопа: 'legacy', 'reseller' (rsk_...), 'tgbuyer' (tgb_...) или 'dorin' (dk_...)."""
+    """Тип API шопа: 'legacy', 'reseller' (rsk_...), 'tgbuyer' (tgb_...), 'dorin' (dk_...)
+    или 'roboticvn' (apk_...)."""
     t = shop.get("api_type")
-    if t in ("legacy", "reseller", "tgbuyer", "dorin"):
+    if t in ("legacy", "reseller", "tgbuyer", "dorin", "roboticvn"):
         return t
     key = str(shop.get("key", ""))
     if key.startswith("rsk_"):
@@ -20,6 +22,8 @@ def _shop_api_type(shop: dict) -> str:
         return "tgbuyer"
     if key.startswith("dk_"):
         return "dorin"
+    if key.startswith("apk_"):
+        return "roboticvn"
     return "legacy"
 
 
@@ -379,6 +383,216 @@ async def _dorin_api(shop: dict, method: str, path: str, payload: dict | None = 
         return {"success": False, "error": f"Сеть/API недоступен: {e}"}
 
 
+# ─── Roboticvn Customer API v2 (ключ apk_...) — переходник ───────────────────
+# Товар -> варианты (тарифы). Для бота каждый вариант — отдельный товар.
+# Цены и наличие есть только в карточке товара, поэтому список товаров = N запросов;
+# кэшируем на _RVN_TTL секунд, чтобы фоновая проверка (раз в 30 с) не упиралась в лимит 120/мин.
+
+_rvn_ids: dict[str, tuple[str, str]] = {}  # "sid:num" -> (product_id, variant_id)
+_rvn_cache: dict = {}                      # sid -> {"ts": float, "products": [...]}
+_rvn_locks: dict = {}                      # sid -> asyncio.Lock: одна загрузка каталога за раз
+_RVN_TTL = 120
+
+
+def _rvn_base(shop: dict) -> str:
+    base = str(shop.get("base", "")).rstrip("/")
+    for suffix in ("/docs", "/api/v2"):
+        if base.endswith(suffix):
+            base = base[: -len(suffix)]
+    return base + "/api/v2"
+
+
+def _rvn_ok(status: int, data) -> bool:
+    return status < 400 and isinstance(data, dict) and "error" not in data
+
+
+def _rvn_err(status: int, data) -> str:
+    if isinstance(data, dict) and isinstance(data.get("error"), dict):
+        return str(data["error"].get("message") or data["error"].get("code"))[:300]
+    return f"HTTP {status}: {str(data)[:200]}"
+
+
+def _rvn_delivery_items(data) -> list[str]:
+    if isinstance(data, dict) and isinstance(data.get("data"), dict):
+        data = data["data"]
+    if not isinstance(data, dict):
+        return []
+    items = []
+    for a in data.get("delivered_accounts") or data.get("deliveredAccount") or []:
+        line = " | ".join(str(v).strip() for v in (a.get("account"), a.get("password")) if v)
+        if a.get("additional_info"):
+            line = f"{line}\n{a['additional_info']}" if line else str(a["additional_info"])
+        items.append(line or str(a.get("display_title") or "?"))
+    return items
+
+
+async def _rvn_load_products(shop: dict, sess, call, cached: dict | None) -> dict:
+    """Полная загрузка каталога: список товаров + карточка каждого (варианты, цены, наличие)."""
+    sid = shop.get("id")
+    stale = {"success": True, "products": cached["products"]} if cached else None
+    summaries, offset = [], 0
+    while True:
+        status, data = await call(sess, "GET", "/products", params={"limit": 100, "offset": offset})
+        if not _rvn_ok(status, data):
+            return stale or {"success": False, "error": _rvn_err(status, data)}
+        batch = data.get("data") or []
+        summaries += batch
+        if len(batch) < 100:
+            break
+        offset += 100
+
+    sem = asyncio.Semaphore(6)
+
+    async def detail(pid):
+        async with sem:
+            return await call(sess, "GET", f"/products/{pid}")
+
+    pids = [p["id"] for p in summaries]
+    results = dict(zip(pids, await asyncio.gather(*(detail(x) for x in pids), return_exceptions=True)))
+    for x in pids:  # одна повторная попытка для упавших карточек
+        r = results[x]
+        if isinstance(r, Exception) or not _rvn_ok(*r):
+            await asyncio.sleep(1)
+            try:
+                results[x] = await detail(x)
+            except Exception as e:
+                results[x] = e
+    prods, failed = [], 0
+    for res in results.values():
+        if isinstance(res, Exception) or not _rvn_ok(*res):
+            failed += 1
+            continue
+        prod = res[1].get("data") or {}
+        ptitle = re.sub(r"^[^\w]+", "", prod.get("title") or "").strip() or prod.get("title", "?")
+        for v in prod.get("variants") or []:
+            prices = v.get("prices") or {}
+            num = zlib.crc32(str(v["id"]).encode("utf-8")) & 0x7FFFFFFF
+            _rvn_ids[f"{sid}:{num}"] = (prod.get("id"), v["id"])
+            parts = (v.get("description"), v.get("delivery_instructions"), prod.get("description"))
+            prods.append({
+                "id": num,
+                "name": f"{ptitle} · {(v.get('title') or '').strip()}",
+                "price_usdt": float(prices.get("usd") or 0),
+                "price_vnd": 0,
+                "stock": int(v.get("available_quantity") or 0) if v.get("in_stock") else 0,
+                "description": "\n\n".join(_strip_html(x) for x in parts if x),
+            })
+    if failed:
+        # неполный список нельзя отдавать: его запомнят как снимок, и пропавшие
+        # товары потом придут ложными «новинками». Старый полный — можно.
+        return stale or {"success": False, "error": f"Roboticvn: не загрузились {failed} карточек, повторю позже."}
+    _rvn_cache[sid] = {"ts": time.time(), "products": prods}
+    return {"success": True, "products": prods}
+
+
+async def _rvn_api(shop: dict, method: str, path: str, payload: dict | None = None) -> dict:
+    """Переходник Roboticvn (/api/v2, x-api-key) -> формат ответов первого шопа."""
+    base = _rvn_base(shop)
+    headers = {"x-api-key": shop["key"]}
+    sid = shop.get("id")
+
+    async def call(sess, m: str, p: str, body: dict | None = None, params: dict | None = None):
+        q = {"locale": "en-US", **(params or {})}
+        async with sess.request(m, f"{base}{p}", params=q, json=body, headers=headers) as resp:
+            return resp.status, await resp.json(content_type=None)
+
+    try:
+        timeout = aiohttp.ClientTimeout(total=90)
+        async with aiohttp.ClientSession(timeout=timeout) as sess:
+            if method == "GET" and path == "/api/balance":
+                status, data = await call(sess, "GET", "/wallet/balance")
+                if not _rvn_ok(status, data):
+                    return {"success": False, "error": _rvn_err(status, data)}
+                bal = data.get("data") or {}
+                st_me, me = await call(sess, "GET", "/me")
+                name = (me.get("data") or {}).get("first_name") if _rvn_ok(st_me, me) else None
+                return {
+                    "success": True,
+                    "username": name or shop.get("name", "?"),
+                    "balance_usdt": float(bal.get("usd") or 0),
+                    "balance_vnd": -1,
+                }
+
+            if method == "GET" and path == "/api/products":
+                cached = _rvn_cache.get(sid)
+                if cached and time.time() - cached["ts"] < _RVN_TTL:
+                    return {"success": True, "products": cached["products"]}
+                lock = _rvn_locks.setdefault(sid, asyncio.Lock())
+                if lock.locked():
+                    # каталог уже грузится (фоновая проверка/другой экран) — ждём его результат,
+                    # а не запускаем вторые ~60 запросов в упор в лимит 120/мин
+                    async with lock:
+                        pass
+                    fresh = _rvn_cache.get(sid)
+                    if fresh:
+                        return {"success": True, "products": fresh["products"]}
+                    return {"success": False, "error": "Roboticvn: каталог сейчас недоступен, повторю позже."}
+                async with lock:
+                    return await _rvn_load_products(shop, sess, call, cached)
+
+            if method == "POST" and path == "/api/buy":
+                payload = payload or {}
+                ref = _rvn_ids.get(f"{sid}:{payload.get('product_id')}")
+                if ref is None:
+                    _rvn_cache.pop(sid, None)
+                    await _rvn_api(shop, "GET", "/api/products")
+                    ref = _rvn_ids.get(f"{sid}:{payload.get('product_id')}")
+                if ref is None:
+                    return {"success": False, "error": "Товар не найден — открой список товаров заново."}
+                pid, vid = ref
+                qty = int(payload.get("quantity", 1))
+
+                st_q, q = await call(sess, "POST", f"/products/{pid}/quote",
+                                     {"variant_id": vid, "quantity": qty, "currency_code": "usd"})
+                if _rvn_ok(st_q, q) and not (q.get("data") or {}).get("can_purchase"):
+                    avail = (q.get("data") or {}).get("available_quantity")
+                    return {"success": False, "error": f"Нет в наличии столько (есть {avail} шт.)." if avail is not None else "Нет в наличии."}
+
+                status, data = await call(sess, "POST", "/orders", {
+                    "items": [{"variant_id": vid, "quantity": qty}],
+                    "currency_code": "usd", "payment_method": "wallet",
+                })
+                if not _rvn_ok(status, data):
+                    return {"success": False, "error": _rvn_err(status, data)}
+                co = data.get("data") or {}
+                order_id = co.get("order_id")
+                items: list[str] = []
+                for _ in range(5):  # выдача обычно сразу, но даём магазину немного времени
+                    st_d, d = await call(sess, "GET", f"/orders/{order_id}/delivery")
+                    if st_d < 400:
+                        items = _rvn_delivery_items(d)
+                        if items:
+                            break
+                    await asyncio.sleep(3)
+                if not items:
+                    items = [
+                        f"Заказ #{co.get('order_display_id') or order_id} оплачен — магазин ещё выдаёт товар "
+                        f"(у некоторых позиций до 24–48 ч). Проверь заказ в боте Roboticvn."
+                    ]
+                pay = co.get("payment") or {}
+                st_b, b = await call(sess, "GET", "/wallet/balance")
+                nb = f"{float((b.get('data') or {}).get('usd') or 0):g}$" if _rvn_ok(st_b, b) else None
+                name = next((p["name"] for p in (_rvn_cache.get(sid) or {}).get("products", [])
+                             if p["id"] == payload.get("product_id")), "")
+                _rvn_cache.pop(sid, None)  # остатки изменились
+                return {
+                    "success": True,
+                    "order": {
+                        "product": name,
+                        "total_items": qty,
+                        "total_price": pay.get("amount"),
+                        "currency": str(pay.get("currency_code") or "usd").upper(),
+                    },
+                    "items": items,
+                    "new_balance": nb,
+                }
+
+            status, data = await call(sess, method, path.replace("/api", "", 1), payload)
+            return data if isinstance(data, dict) else {"success": False, "error": str(data)[:300]}
+    except Exception as e:
+        return {"success": False, "error": f"Сеть/API недоступен: {e}"}
+
+
 _legacy_shop_api = shop_api
 
 
@@ -392,4 +606,6 @@ async def shop_api(shop: dict | None, method: str, path: str, payload: dict | No
             return await _tgbuyer_api(shop, method, path, payload)
         if t == "dorin":
             return await _dorin_api(shop, method, path, payload)
+        if t == "roboticvn":
+            return await _rvn_api(shop, method, path, payload)
     return await _legacy_shop_api(shop, method, path, payload)

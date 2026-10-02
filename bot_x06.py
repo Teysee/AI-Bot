@@ -38,6 +38,7 @@ def _guess_shop(raw: str) -> tuple[str, str, str, str] | None:
         (("dorin", "mydorin"), "MyDorinAI", "https://mydorinai.online"),
         (("cgpt", "active.pro"), "CGPT Active", "https://cgpt-active.pro/telegram/api"),
         (("testflight", "flighty"), "TestFlighty", "https://api-tgbot.testflighty.com"),
+        (("roboticvn", "robotic"), "Roboticvn", "https://api.roboticvn.com"),
     ]
     if "|" in raw:
         parts = [p.strip() for p in raw.split("|")]
@@ -47,18 +48,21 @@ def _guess_shop(raw: str) -> tuple[str, str, str, str] | None:
     bits = raw.split()
     if not bits:
         return None
-    key = next((b for b in bits if b.startswith(("tgb_", "rsk_", "dk_")) or len(b) >= 16), "")
+    key = next((b for b in bits if b.startswith(("tgb_", "rsk_", "dk_", "apk_")) or len(b) >= 16), "")
     hint = " ".join(b for b in bits if b != key).lower()
     if not key:
         return None
     for keys, name, base in presets:
-        if any(k in hint or k in key.lower() or k in base.lower() for k in keys):
+        # только подсказка и сам ключ: base пресета всегда содержит его же слово
+        if any(k in hint or k in key.lower() for k in keys):
             return name, base, key, ""
+    if key.startswith("apk_"):
+        return hint.title() or "Roboticvn", "https://api.roboticvn.com", key, ""
     if key.startswith("dk_"):
         return hint.title() or "MyDorinAI", "https://mydorinai.online", key, ""
     if key.startswith("rsk_"):
         return hint.title() or "Reseller", "https://cgpt-active.pro/telegram/api", key, ""
-    if key.startswith("tgb_") and "canboso" in hint:
+    if key.startswith("tgb_"):  # как раньше: tgb_ без подсказки — Canboso
         return "Canboso", "https://canboso.com", key, ""
     return None
 
@@ -74,7 +78,8 @@ async def cmd_addshop(message: Message, command):
             f"{CE_KEY} Использование:\n"
             f"<code>/addshop Название | https://api-url | API_КЛЮЧ | ссылка</code>\n"
             f"или коротко: <code>/addshop tgb_… canboso</code>\n"
-            f"<code>/addshop dk_… mydorinai</code>",
+            f"<code>/addshop dk_… mydorinai</code>\n"
+            f"<code>/addshop apk_… roboticvn</code>",
             parse_mode="HTML", reply_markup=MK,
         )
         return
