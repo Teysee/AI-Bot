@@ -460,13 +460,20 @@ def _rvn_build(sid, st: dict) -> list[dict]:
             num = zlib.crc32(str(v["id"]).encode("utf-8")) & 0x7FFFFFFF
             _rvn_ids[f"{sid}:{num}"] = (prod.get("id") or pid, v["id"])
             parts = (v.get("description"), v.get("delivery_instructions"), prod.get("description"))
+            # остаток: число из available_quantity; «в наличии» без числа — считаем, что есть
+            # (покупка всё равно сверяется с котировкой магазина)
+            qty = v.get("available_quantity")
+            if isinstance(qty, (int, float)) and qty > 0:
+                stock = int(qty)
+            else:
+                stock = 999 if v.get("in_stock") and qty is None else 0
             prods.append({
                 "id": num,
                 "name": f"{ptitle} · {(v.get('title') or '').strip()}",
                 "group": (prod.get("title") or ptitle).strip(),  # товар целиком, с 🔥 — для каталога-сетки
                 "price_usdt": float(prices.get("usd") or 0),
                 "price_vnd": 0,
-                "stock": int(v.get("available_quantity") or 0) if v.get("in_stock") else 0,
+                "stock": stock,
                 "description": "\n\n".join(_strip_html(x) for x in parts if x),
             })
     return prods

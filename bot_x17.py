@@ -120,17 +120,32 @@ async def _autobuy_tick(bot: Bot, shop: dict, products: list[dict]) -> None:
             remaining.append(w)
             continue
 
+        log.info("Autobuy: %s in stock (%s), buying %s", w.get("name"), stock, want)
         res = await shop_api(shop, "POST", "/api/buy", {
             "product_id": w["product_id"], "quantity": want, "currency": currency,
         })
         if not res.get("success"):
-            log.warning("Autobuy failed for %s: %s", w.get("name"), res.get("error"))
+            err = str(res.get("error") or "?")
+            log.warning("Autobuy failed for %s: %s", w.get("name"), err)
+            if w.get("last_error") != err:  # раньше молчали — теперь сообщаем (одну и ту же ошибку один раз)
+                w["last_error"] = err
+                changed = True
+                await bot.send_message(
+                    w["chat_id"],
+                    f"{CE_WARN} <b>Автопокупка: товар появился "
+                    f"({'есть в наличии' if stock >= 999 else f'{stock} шт.'}), но купить не вышло.</b>\n"
+                    f"{w_ce} {escape(w.get('name', '?'))} ({escape(shop.get('name', '?'))})\n"
+                    f"Ответ магазина: <code>{escape(err[:300])}</code>\n"
+                    f"Продолжаю следить и пробовать.",
+                    parse_mode="HTML",
+                )
             remaining.append(w)
             continue
 
         items = res.get("items", [])
         w["qty_left"] = max(0, w.get("qty_left", 0) - want)
         w["notified_low_balance"] = False
+        w.pop("last_error", None)
         changed = True
 
         head = (
