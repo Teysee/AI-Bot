@@ -385,13 +385,33 @@ async def _dorin_api(shop: dict, method: str, path: str, payload: dict | None = 
 
 # ─── Roboticvn Customer API v2 (ключ apk_...) — переходник ───────────────────
 # Товар -> варианты (тарифы). Для бота каждый вариант — отдельный товар.
-# Цены и наличие есть только в карточке товара, поэтому список товаров = N запросов;
-# кэшируем на _RVN_TTL секунд, чтобы фоновая проверка (раз в 30 с) не упиралась в лимит 120/мин.
+# Цены и наличие есть только в карточке товара (1 запрос на товар, их ~60), а лимит
+# магазина — 120 запросов/мин на ключ. Поэтому каталог грузится целиком один раз, дальше
+# карточки обновляются понемногу (самые старые, по _RVN_PER_PASS за проход), а после
+# ответа 429 — пауза _RVN_COOLDOWN, всё это время отдаётся уже загруженный каталог.
 
 _rvn_ids: dict[str, tuple[str, str]] = {}  # "sid:num" -> (product_id, variant_id)
-_rvn_cache: dict = {}                      # sid -> {"ts": float, "products": [...]}
-_rvn_locks: dict = {}                      # sid -> asyncio.Lock: одна загрузка каталога за раз
-_RVN_TTL = 120
+_rvn_state: dict = {}                      # sid -> состояние каталога (см. _rvn_st)
+_rvn_locks: dict = {}                      # sid -> asyncio.Lock: один проход обновления за раз
+_rvn_names: dict = {}                      # sid -> имя аккаунта из /me (запрашиваем один раз)
+_RVN_LIST_TTL = 300    # список товаров перечитываем раз в 5 мин (новинки)
+_RVN_CARD_TTL = 240    # карточку старше 4 мин — обновить
+_RVN_PER_PASS = 8      # не больше 8 карточек за проход (~16 запросов/мин при проходе раз в 30 с)
+_RVN_PASS_GAP = 20     # проходы не чаще раза в 20 с — остальные вызовы берут готовое
+_RVN_COOLDOWN = 65     # после 429 — минута тишины
+_RVN_BAL_TTL = 15      # баланс кэшируем на 15 с (его спрашивают на каждом экране)
+
+
+def _rvn_st(sid) -> dict:
+    return _rvn_state.setdefault(sid, {
+        "order": [],         # id товаров в порядке магазина
+        "cards": {},         # product_id -> (ts, карточка)
+        "list_ts": 0.0,
+        "pass_ts": 0.0,
+        "cooldown": 0.0,
+        "products": None,    # последний собранный список для бота (None — ещё ни разу полный)
+        "bal": None,         # (ts, ответ /api/balance)
+    })
 
 
 def _rvn_base(shop: dict) -> str:
@@ -426,48 +446,19 @@ def _rvn_delivery_items(data) -> list[str]:
     return items
 
 
-async def _rvn_load_products(shop: dict, sess, call, cached: dict | None) -> dict:
-    """Полная загрузка каталога: список товаров + карточка каждого (варианты, цены, наличие)."""
-    sid = shop.get("id")
-    stale = {"success": True, "products": cached["products"]} if cached else None
-    summaries, offset = [], 0
-    while True:
-        status, data = await call(sess, "GET", "/products", params={"limit": 100, "offset": offset})
-        if not _rvn_ok(status, data):
-            return stale or {"success": False, "error": _rvn_err(status, data)}
-        batch = data.get("data") or []
-        summaries += batch
-        if len(batch) < 100:
-            break
-        offset += 100
-
-    sem = asyncio.Semaphore(6)
-
-    async def detail(pid):
-        async with sem:
-            return await call(sess, "GET", f"/products/{pid}")
-
-    pids = [p["id"] for p in summaries]
-    results = dict(zip(pids, await asyncio.gather(*(detail(x) for x in pids), return_exceptions=True)))
-    for x in pids:  # одна повторная попытка для упавших карточек
-        r = results[x]
-        if isinstance(r, Exception) or not _rvn_ok(*r):
-            await asyncio.sleep(1)
-            try:
-                results[x] = await detail(x)
-            except Exception as e:
-                results[x] = e
-    prods, failed = [], 0
-    for res in results.values():
-        if isinstance(res, Exception) or not _rvn_ok(*res):
-            failed += 1
+def _rvn_build(sid, st: dict) -> list[dict]:
+    """Собрать список для бота из загруженных карточек (каждый вариант — позиция)."""
+    prods = []
+    for pid in st["order"]:
+        card = st["cards"].get(pid)
+        if not card:
             continue
-        prod = res[1].get("data") or {}
+        prod = card[1]
         ptitle = re.sub(r"^[^\w]+", "", prod.get("title") or "").strip() or prod.get("title", "?")
         for v in prod.get("variants") or []:
             prices = v.get("prices") or {}
             num = zlib.crc32(str(v["id"]).encode("utf-8")) & 0x7FFFFFFF
-            _rvn_ids[f"{sid}:{num}"] = (prod.get("id"), v["id"])
+            _rvn_ids[f"{sid}:{num}"] = (prod.get("id") or pid, v["id"])
             parts = (v.get("description"), v.get("delivery_instructions"), prod.get("description"))
             prods.append({
                 "id": num,
@@ -477,12 +468,83 @@ async def _rvn_load_products(shop: dict, sess, call, cached: dict | None) -> dic
                 "stock": int(v.get("available_quantity") or 0) if v.get("in_stock") else 0,
                 "description": "\n\n".join(_strip_html(x) for x in parts if x),
             })
-    if failed:
-        # неполный список нельзя отдавать: его запомнят как снимок, и пропавшие
-        # товары потом придут ложными «новинками». Старый полный — можно.
-        return stale or {"success": False, "error": f"Roboticvn: не загрузились {failed} карточек, повторю позже."}
-    _rvn_cache[sid] = {"ts": time.time(), "products": prods}
-    return {"success": True, "products": prods}
+    return prods
+
+
+async def _rvn_load_products(shop: dict, sess, call) -> dict:
+    """Один проход обновления каталога (вызывать под _rvn_locks[sid])."""
+    sid = shop.get("id")
+    st = _rvn_st(sid)
+    now = time.time()
+    ready = {"success": True, "products": st["products"]} if st["products"] is not None else None
+    if now < st["cooldown"] or (ready and now - st["pass_ts"] < _RVN_PASS_GAP):
+        return ready or {
+            "success": False,
+            "error": "Roboticvn: магазин ограничил частоту запросов, каталог догрузится через минуту.",
+        }
+    st["pass_ts"] = now
+    limited = False
+
+    # 1) список товаров — редко: он нужен только чтобы заметить новые/убранные товары
+    if not st["order"] or now - st["list_ts"] > _RVN_LIST_TTL:
+        summaries, offset = [], 0
+        while True:
+            status, data = await call(sess, "GET", "/products", params={"limit": 100, "offset": offset})
+            if status == 429:
+                limited = True
+                break
+            if not _rvn_ok(status, data):
+                return ready or {"success": False, "error": _rvn_err(status, data)}
+            batch = data.get("data") or []
+            summaries += batch
+            if len(batch) < 100:
+                break
+            offset += 100
+        if not limited:
+            st["order"] = [p["id"] for p in summaries]
+            st["list_ts"] = now
+            alive = set(st["order"])
+            for pid in [p for p in st["cards"] if p not in alive]:
+                del st["cards"][pid]
+
+    # 2) карточки: все недостающие + несколько самых старых
+    if not limited:
+        missing = [pid for pid in st["order"] if pid not in st["cards"]]
+        old = sorted((ts, pid) for pid, (ts, _) in st["cards"].items() if now - ts > _RVN_CARD_TTL)
+        todo = missing + [pid for _, pid in old[:_RVN_PER_PASS]]
+        sem = asyncio.Semaphore(4)
+
+        async def detail(pid):
+            nonlocal limited
+            async with sem:
+                if limited:
+                    return  # после первого 429 новые запросы не шлём
+                try:
+                    status, data = await call(sess, "GET", f"/products/{pid}")
+                except Exception:
+                    return
+                if status == 429:
+                    limited = True
+                elif _rvn_ok(status, data):
+                    st["cards"][pid] = (time.time(), data.get("data") or {})
+
+        await asyncio.gather(*(detail(pid) for pid in todo))
+
+    if limited:
+        st["cooldown"] = time.time() + _RVN_COOLDOWN
+        log.warning("Roboticvn (shop %s): 429, pause %ss", sid, _RVN_COOLDOWN)
+
+    complete = bool(st["order"]) and all(pid in st["cards"] for pid in st["order"])
+    if st["products"] is None and not complete:
+        # первый полный каталог ещё не собран: неполный не отдаём — его запомнят как снимок,
+        # и недогруженные товары потом придут ложными «новинками»
+        got = sum(1 for pid in st["order"] if pid in st["cards"])
+        return {
+            "success": False,
+            "error": f"Roboticvn: загружаю каталог ({got}/{len(st['order']) or '?'}), повтори через минуту.",
+        }
+    st["products"] = _rvn_build(sid, st)
+    return {"success": True, "products": st["products"]}
 
 
 async def _rvn_api(shop: dict, method: str, path: str, payload: dict | None = None) -> dict:
@@ -500,41 +562,40 @@ async def _rvn_api(shop: dict, method: str, path: str, payload: dict | None = No
         timeout = aiohttp.ClientTimeout(total=90)
         async with aiohttp.ClientSession(timeout=timeout) as sess:
             if method == "GET" and path == "/api/balance":
+                st = _rvn_st(sid)
+                if st["bal"] and time.time() - st["bal"][0] < _RVN_BAL_TTL:
+                    return st["bal"][1]
                 status, data = await call(sess, "GET", "/wallet/balance")
                 if not _rvn_ok(status, data):
+                    if status == 429 and st["bal"]:
+                        return st["bal"][1]  # упёрлись в лимит — последний известный баланс
                     return {"success": False, "error": _rvn_err(status, data)}
                 bal = data.get("data") or {}
-                st_me, me = await call(sess, "GET", "/me")
-                name = (me.get("data") or {}).get("first_name") if _rvn_ok(st_me, me) else None
-                return {
+                if sid not in _rvn_names:
+                    st_me, me = await call(sess, "GET", "/me")
+                    if _rvn_ok(st_me, me):
+                        _rvn_names[sid] = (me.get("data") or {}).get("first_name")
+                res = {
                     "success": True,
-                    "username": name or shop.get("name", "?"),
+                    "username": _rvn_names.get(sid) or shop.get("name", "?"),
                     "balance_usdt": float(bal.get("usd") or 0),
                     "balance_vnd": -1,
                 }
+                st["bal"] = (time.time(), res)
+                return res
 
             if method == "GET" and path == "/api/products":
-                cached = _rvn_cache.get(sid)
-                if cached and time.time() - cached["ts"] < _RVN_TTL:
-                    return {"success": True, "products": cached["products"]}
-                lock = _rvn_locks.setdefault(sid, asyncio.Lock())
-                if lock.locked():
-                    # каталог уже грузится (фоновая проверка/другой экран) — ждём его результат,
-                    # а не запускаем вторые ~60 запросов в упор в лимит 120/мин
-                    async with lock:
-                        pass
-                    fresh = _rvn_cache.get(sid)
-                    if fresh:
-                        return {"success": True, "products": fresh["products"]}
-                    return {"success": False, "error": "Roboticvn: каталог сейчас недоступен, повторю позже."}
-                async with lock:
-                    return await _rvn_load_products(shop, sess, call, cached)
+                # фоновая проверка и экраны бота встают в очередь: проход обновления один за раз,
+                # а пока между проходами < _RVN_PASS_GAP, все получают готовый список
+                async with _rvn_locks.setdefault(sid, asyncio.Lock()):
+                    return await _rvn_load_products(shop, sess, call)
 
             if method == "POST" and path == "/api/buy":
                 payload = payload or {}
                 ref = _rvn_ids.get(f"{sid}:{payload.get('product_id')}")
                 if ref is None:
-                    _rvn_cache.pop(sid, None)
+                    st = _rvn_st(sid)
+                    st["list_ts"] = st["pass_ts"] = 0.0  # перечитать список при следующем проходе
                     await _rvn_api(shop, "GET", "/api/products")
                     ref = _rvn_ids.get(f"{sid}:{payload.get('product_id')}")
                 if ref is None:
@@ -572,9 +633,11 @@ async def _rvn_api(shop: dict, method: str, path: str, payload: dict | None = No
                 pay = co.get("payment") or {}
                 st_b, b = await call(sess, "GET", "/wallet/balance")
                 nb = f"{float((b.get('data') or {}).get('usd') or 0):g}$" if _rvn_ok(st_b, b) else None
-                name = next((p["name"] for p in (_rvn_cache.get(sid) or {}).get("products", [])
+                st = _rvn_st(sid)
+                name = next((p["name"] for p in (st["products"] or [])
                              if p["id"] == payload.get("product_id")), "")
-                _rvn_cache.pop(sid, None)  # остатки изменились
+                st["cards"].pop(pid, None)  # остаток этого товара изменился — перечитать карточку
+                st["bal"] = None
                 return {
                     "success": True,
                     "order": {
