@@ -463,6 +463,7 @@ def _rvn_build(sid, st: dict) -> list[dict]:
             prods.append({
                 "id": num,
                 "name": f"{ptitle} · {(v.get('title') or '').strip()}",
+                "group": (prod.get("title") or ptitle).strip(),  # товар целиком, с 🔥 — для каталога-сетки
                 "price_usdt": float(prices.get("usd") or 0),
                 "price_vnd": 0,
                 "stock": int(v.get("available_quantity") or 0) if v.get("in_stock") else 0,

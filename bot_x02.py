@@ -24,7 +24,7 @@ def cat_filter(products: list[dict], cat: str) -> list[dict]:
 
 def prod_short_name(name: str, cat: str) -> str:
     n = re.sub(r"^[^A-Za-z0-9]+", "", name)
-    n = re.sub(r"(?i)^(chat\s*gpt|claude|perplexity|pplx|grok|link\s+gemini|gemini|capcut)\s*(plus|pro(\s+team)?|max|sonnet|opus)?\s*", "", n).strip(" -")
+    n = re.sub(r"(?i)^(chat\s*gpt|claude|perplexity|pplx|grok|link\s+gemini|gemini|capcut)\s*(plus|pro(\s+team)?|max|sonnet|opus)?\s*", "", n).strip(" -·")
     return n or name
 
 
