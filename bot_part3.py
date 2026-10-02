@@ -399,7 +399,7 @@ _RVN_CARD_TTL = 240    # карточку старше 4 мин — обнови
 _RVN_PER_PASS = 8      # не больше 8 карточек за проход (~16 запросов/мин при проходе раз в 30 с)
 _RVN_PASS_GAP = 20     # проходы не чаще раза в 20 с — остальные вызовы берут готовое
 _RVN_COOLDOWN = 65     # после 429 — минута тишины
-_RVN_BAL_TTL = 15      # баланс кэшируем на 15 с (его спрашивают на каждом экране)
+_RVN_BAL_TTL = 20      # баланс кэшируем на 20 с; при автопокупке его заранее освежают раз в 10 с
 
 
 def _rvn_st(sid) -> dict:
@@ -612,6 +612,7 @@ async def _rvn_api(shop: dict, method: str, path: str, payload: dict | None = No
                         status, data = await call(sess, "GET", f"/products/{pid}")
                         if status == 429:
                             st["cooldown"] = time.time() + _RVN_COOLDOWN
+                            log.warning("Roboticvn (shop %s): 429 on autobuy check, pause %ss", sid, _RVN_COOLDOWN)
                             break
                         if _rvn_ok(status, data):
                             st["cards"][pid] = (time.time(), data.get("data") or {})
@@ -634,11 +635,14 @@ async def _rvn_api(shop: dict, method: str, path: str, payload: dict | None = No
                 pid, vid = ref
                 qty = int(payload.get("quantity", 1))
 
-                st_q, q = await call(sess, "POST", f"/products/{pid}/quote",
-                                     {"variant_id": vid, "quantity": qty, "currency_code": "usd"})
-                if _rvn_ok(st_q, q) and not (q.get("data") or {}).get("can_purchase"):
-                    avail = (q.get("data") or {}).get("available_quantity")
-                    return {"success": False, "error": f"Нет в наличии столько (есть {avail} шт.)." if avail is not None else "Нет в наличии."}
+                # автопокупка гонится за секундами — пропускает котировку: заказ магазин всё равно
+                # проверяет по остатку сам, а лишний запрос перед ним — время, за которое разберут
+                if not payload.get("skip_quote"):
+                    st_q, q = await call(sess, "POST", f"/products/{pid}/quote",
+                                         {"variant_id": vid, "quantity": qty, "currency_code": "usd"})
+                    if _rvn_ok(st_q, q) and not (q.get("data") or {}).get("can_purchase"):
+                        avail = (q.get("data") or {}).get("available_quantity")
+                        return {"success": False, "error": f"Нет в наличии столько (есть {avail} шт.)." if avail is not None else "Нет в наличии."}
 
                 status, data = await call(sess, "POST", "/orders", {
                     "items": [{"variant_id": vid, "quantity": qty}],

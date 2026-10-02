@@ -31,6 +31,12 @@ async def _autobuy_pass(bot: Bot, next_at: dict) -> None:
         if _shop_api_type(shop) == "roboticvn":
             # остальные ~60 запросов/мин остаются каталогу и экранам бота — без блокировки 429
             next_at[sid] = now + max(AUTOBUY_FAST, AUTOBUY_RVN_PER_ITEM * len(ids))
+            if now >= next_at.get(f"bal:{sid}", 0):
+                # баланс держим свежим заранее, чтобы в момент появления товара не тратить
+                # на него запрос — сразу заказ (+6 запросов/мин)
+                next_at[f"bal:{sid}"] = now + 10
+                _rvn_st(sid)["bal"] = None
+                await shop_api(shop, "GET", "/api/balance")
             data = await shop_api(shop, "GET", "/api/products/fresh", {"ids": ids})
         else:
             next_at[sid] = now + max(AUTOBUY_FAST, AUTOBUY_OTHER)

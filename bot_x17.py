@@ -121,9 +121,10 @@ async def _autobuy_tick(bot: Bot, shop: dict, products: list[dict]) -> None:
             continue
 
         log.info("Autobuy: %s in stock (%s), buying %s", w.get("name"), stock, want)
-        res = await shop_api(shop, "POST", "/api/buy", {
-            "product_id": w["product_id"], "quantity": want, "currency": currency,
-        })
+        order = {"product_id": w["product_id"], "quantity": want, "currency": currency}
+        if _shop_api_type(shop) == "roboticvn":
+            order["skip_quote"] = True  # только переходнику Roboticvn: на счету секунды
+        res = await shop_api(shop, "POST", "/api/buy", order)
         if not res.get("success"):
             err = str(res.get("error") or "?")
             log.warning("Autobuy failed for %s: %s", w.get("name"), err)
