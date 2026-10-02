@@ -61,10 +61,17 @@ async def _check_new_products(bot: Bot, shop: dict, products: list[dict]) -> Non
     save_seen_products(seen_all)
 
 
+def _watch_key(w: dict) -> str:
+    return json.dumps(w, sort_keys=True, ensure_ascii=False)
+
+
 async def _autobuy_tick(bot: Bot, shop: dict, products: list[dict]) -> None:
     all_watches = load_autobuy()
     if not all_watches:
         return
+    # снимок «как было» до изменений: по нему при сохранении поймём, что пользователь
+    # добавил/удалил, пока мы ходили в сеть (иначе такие правки молча терялись)
+    orig_key = {id(w): _watch_key(w) for w in all_watches}
     sid = shop.get("id")
     stock_map = {p["id"]: p for p in products}
     remaining: list[dict] = []
@@ -146,7 +153,14 @@ async def _autobuy_tick(bot: Bot, shop: dict, products: list[dict]) -> None:
 
     if changed or len(remaining) != len(all_watches):
         async with _lock:
-            save_autobuy(remaining)
+            current = load_autobuy()
+            cur_keys = {_watch_key(x) for x in current}
+            known = set(orig_key.values())
+            # наши результаты — только для автопокупок, которые пользователь не удалил,
+            # плюс всё, что он добавил за время проверки
+            merged = [w for w in remaining if orig_key[id(w)] in cur_keys]
+            merged += [x for x in current if _watch_key(x) not in known]
+            save_autobuy(merged)
 
 # continue bot_x18.py
 _NEXT = Path(__file__).resolve().with_name('bot_x18.py')

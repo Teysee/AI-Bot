@@ -591,6 +591,29 @@ async def _rvn_api(shop: dict, method: str, path: str, payload: dict | None = No
                 async with _rvn_locks.setdefault(sid, asyncio.Lock()):
                     return await _rvn_load_products(shop, sess, call)
 
+            if method == "GET" and path == "/api/products/fresh":
+                # для автопокупки: свежие карточки только нужных товаров, мимо кэша каталога
+                ids = list((payload or {}).get("ids") or [])
+                if any(f"{sid}:{i}" not in _rvn_ids for i in ids):
+                    await _rvn_api(shop, "GET", "/api/products")  # после перезапуска — узнать id
+                st = _rvn_st(sid)
+                if time.time() < st["cooldown"]:
+                    return {"success": False, "error": "Roboticvn: пауза после лимита запросов."}
+                pids = {_rvn_ids[f"{sid}:{i}"][0] for i in ids if f"{sid}:{i}" in _rvn_ids}
+                async with _rvn_locks.setdefault(sid, asyncio.Lock()):
+                    for pid in pids:
+                        status, data = await call(sess, "GET", f"/products/{pid}")
+                        if status == 429:
+                            st["cooldown"] = time.time() + _RVN_COOLDOWN
+                            break
+                        if _rvn_ok(status, data):
+                            st["cards"][pid] = (time.time(), data.get("data") or {})
+                    if st["products"] is not None:
+                        st["products"] = _rvn_build(sid, st)
+                    wanted = set(ids)
+                    found = [p for p in _rvn_build(sid, st) if p["id"] in wanted]
+                return {"success": True, "products": found}
+
             if method == "POST" and path == "/api/buy":
                 payload = payload or {}
                 ref = _rvn_ids.get(f"{sid}:{payload.get('product_id')}")

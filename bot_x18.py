@@ -1,16 +1,51 @@
 async def shop_loop(bot: Bot) -> None:
+    """Новинки в магазинах (раз в AUTOBUY_INTERVAL). Автопокупка — в autobuy_loop."""
     log.info("Shop loop started (interval %ss)", AUTOBUY_INTERVAL)
     while True:
         try:
             for shop in load_shops():
                 data = await shop_api(shop, "GET", "/api/products")
                 if data.get("success"):
-                    products = data.get("products", [])
-                    await _check_new_products(bot, shop, products)
-                    await _autobuy_tick(bot, shop, products)
+                    await _check_new_products(bot, shop, data.get("products", []))
         except Exception:
             log.exception("Shop loop tick failed")
         await asyncio.sleep(AUTOBUY_INTERVAL)
+
+
+AUTOBUY_FAST = int(os.getenv("AUTOBUY_FAST", "5"))  # как часто проверять товары под автопокупкой, сек
+
+
+async def _autobuy_pass(bot: Bot, next_at: dict) -> None:
+    """Один проход: магазины с активными автопокупками, у каждого — свой темп опроса."""
+    watches = load_autobuy()
+    for shop in load_shops() if watches else []:
+        sid = shop.get("id")
+        ids = sorted({w.get("product_id") for w in watches if w.get("shop_id", 1) == sid})
+        now = time.time()
+        if not ids or now < next_at.get(sid, 0):
+            continue
+        if _shop_api_type(shop) == "roboticvn":
+            # 1 запрос на товар; ~1.5 с на товар держит нас ≤40 запросов/мин из лимита 120
+            next_at[sid] = now + max(AUTOBUY_FAST, 1.5 * len(ids))
+            data = await shop_api(shop, "GET", "/api/products/fresh", {"ids": ids})
+        else:
+            next_at[sid] = now + max(AUTOBUY_FAST, 10)  # один запрос — весь список
+            data = await shop_api(shop, "GET", "/api/products")
+        if data.get("success"):
+            await _autobuy_tick(bot, shop, data.get("products", []))
+
+
+async def autobuy_loop(bot: Bot) -> None:
+    """Автопокупка: часто проверяем только товары под автопокупкой, чтобы купить, как только
+    они появятся. Единственное место, где автопокупки покупаются."""
+    log.info("Autobuy loop started (every %ss)", AUTOBUY_FAST)
+    next_at: dict = {}
+    while True:
+        try:
+            await _autobuy_pass(bot, next_at)
+        except Exception:
+            log.exception("Autobuy loop tick failed")
+        await asyncio.sleep(AUTOBUY_FAST)
 
 
 # ─── Адаптеры API магазинов (Reseller /v1, Buyer tgb_) — в bot_part3.py ──────────────────────────────
@@ -48,6 +83,7 @@ async def main():
     ])
     await bot.set_chat_menu_button(menu_button=MenuButtonCommands())
     asyncio.create_task(shop_loop(bot))
+    asyncio.create_task(autobuy_loop(bot))
     log.info("Commands registered. Starting polling...")
     await dp.start_polling(bot)
 

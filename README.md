@@ -27,6 +27,7 @@ bash install-grok.sh
 | `SHOP_API_KEY` | нет | — | ключ API магазина по умолчанию |
 | `SHOP_API_BASE` | нет | `https://tunvnmmo.duckdns.org` | адрес API магазина по умолчанию |
 | `AUTOBUY_INTERVAL` | нет | `30` | период проверки новых товаров, сек |
+| `AUTOBUY_FAST` | нет | `5` | как часто проверять товары под автопокупкой, сек (Roboticvn — не чаще 1.5 с × число товаров, обычные шопы — не чаще 10 с) |
 | `DATA_FILE` | нет | `accounts.json` | склад Grok-аккаунтов |
 | `CDK_FILE` | нет | `cdk.json` | склад CDK-ключей |
 | `GEMINI_FILE` / `CHATGPT_FILE` / `CAPCUT_FILE` | нет | `*.json` | склады по категориям |

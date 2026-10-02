@@ -27,7 +27,7 @@ async def cb_shop_auto(cb: CallbackQuery):
     await cb.message.edit_text(
         f"{CE_PIN} <b>Автопокупка создана:</b>\n"
         f"{ce} {escape(p['name'])} × <b>{qty}</b> ({sname})\n\n"
-        f"Проверяю наличие каждые {AUTOBUY_INTERVAL} сек. "
+        f"Проверяю наличие каждые несколько секунд. "
         f"Как только появится — куплю и пришлю сюда.",
         parse_mode="HTML",
     )
