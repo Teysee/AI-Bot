@@ -12,7 +12,11 @@ async def shop_loop(bot: Bot) -> None:
         await asyncio.sleep(AUTOBUY_INTERVAL)
 
 
-AUTOBUY_FAST = int(os.getenv("AUTOBUY_FAST", "5"))  # как часто проверять товары под автопокупкой, сек
+# Магазины не присылают уведомлений о поступлении (у Roboticvn в API нет вебхуков),
+# поэтому «мгновенно» = частый опрос. Темп ограничен лимитами магазинов.
+AUTOBUY_FAST  = float(os.getenv("AUTOBUY_FAST", "1.5"))   # самый частый опрос одного шопа, сек
+AUTOBUY_OTHER = float(os.getenv("AUTOBUY_OTHER", "5"))    # обычные шопы (весь список одним запросом)
+AUTOBUY_RVN_PER_ITEM = 1.0  # Roboticvn: 1 запрос на товар раз в N·1 с → ≤60/мин из лимита 120
 
 
 async def _autobuy_pass(bot: Bot, next_at: dict) -> None:
@@ -25,11 +29,11 @@ async def _autobuy_pass(bot: Bot, next_at: dict) -> None:
         if not ids or now < next_at.get(sid, 0):
             continue
         if _shop_api_type(shop) == "roboticvn":
-            # 1 запрос на товар; ~1.5 с на товар держит нас ≤40 запросов/мин из лимита 120
-            next_at[sid] = now + max(AUTOBUY_FAST, 1.5 * len(ids))
+            # остальные ~60 запросов/мин остаются каталогу и экранам бота — без блокировки 429
+            next_at[sid] = now + max(AUTOBUY_FAST, AUTOBUY_RVN_PER_ITEM * len(ids))
             data = await shop_api(shop, "GET", "/api/products/fresh", {"ids": ids})
         else:
-            next_at[sid] = now + max(AUTOBUY_FAST, 10)  # один запрос — весь список
+            next_at[sid] = now + max(AUTOBUY_FAST, AUTOBUY_OTHER)
             data = await shop_api(shop, "GET", "/api/products")
         if data.get("success"):
             await _autobuy_tick(bot, shop, data.get("products", []))
@@ -45,7 +49,7 @@ async def autobuy_loop(bot: Bot) -> None:
             await _autobuy_pass(bot, next_at)
         except Exception:
             log.exception("Autobuy loop tick failed")
-        await asyncio.sleep(AUTOBUY_FAST)
+        await asyncio.sleep(0.5)  # темп каждого шопа задаёт next_at, тут — только «пульс»
 
 
 # ─── Адаптеры API магазинов (Reseller /v1, Buyer tgb_) — в bot_part3.py ──────────────────────────────
