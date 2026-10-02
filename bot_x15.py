@@ -22,19 +22,32 @@ async def cb_mall_home(cb: CallbackQuery):
     await cb.message.edit_text(text, reply_markup=kb, parse_mode="HTML")
 
 
+MALL_PAGE_SIZE = 20          # Telegram: не больше 100 кнопок в сообщении
+mall_page: dict[int, int] = {}  # user_id -> открытая страница ассортимента
+
+
 @dp.callback_query(F.data.startswith("mall_sel:"))
 async def cb_mall_sel(cb: CallbackQuery):
+    """mall_sel:<shop_id>[:<page>] — ассортимент шопа постранично."""
     if not is_admin_cb(cb):
         return
-    shop = get_shop(int(cb.data.split(":")[1]))
+    parts = cb.data.split(":")
+    shop = get_shop(int(parts[1]))
     if not shop:
         await cb.answer("Шоп не найден.", show_alert=True)
         return
+    page = int(parts[2]) if len(parts) > 2 else 0
+    mall_page[cb.from_user.id] = page
     await cb.answer("Загружаю ассортимент...")
-    await _mall_show_products(cb, shop)
+    await _mall_show_products(cb, shop, page)
 
 
-async def _mall_show_products(cb: CallbackQuery, shop: dict) -> None:
+@dp.callback_query(F.data == "mall_noop")
+async def cb_mall_noop(cb: CallbackQuery):
+    await cb.answer()
+
+
+async def _mall_show_products(cb: CallbackQuery, shop: dict, page: int = 0) -> None:
     back_kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="Назад", callback_data="mall_home", style=ButtonStyle.DANGER, icon_custom_emoji_id=ID_NO)],
     ])
@@ -58,13 +71,18 @@ async def _mall_show_products(cb: CallbackQuery, shop: dict) -> None:
         bal_line = f"\nБаланс: <b>{fmt_usdt(bal.get('balance_usdt', 0))}</b>"
 
     sid = shop.get("id")
+    pages = max(1, -(-len(prods) // MALL_PAGE_SIZE))
+    page = min(max(page, 0), pages - 1)
     lines = [f"{CE_MALL} <b>{escape(shop.get('name', ''))} — весь ассортимент:</b>{bal_line}"]
+    if pages > 1:
+        lines.append(f"Позиций: <b>{len(prods)}</b> · страница {page + 1}/{pages}")
     rows = []
-    for p in prods:
+    for p in prods:  # кэш — для всех, кнопки — только для текущей страницы
         gpt_prod_cache[f"{sid}:{p['id']}"] = p
+    for p in prods[page * MALL_PAGE_SIZE:(page + 1) * MALL_PAGE_SIZE]:
         stock = int(p.get("stock", 0) or 0)
         price = fmt_usdt(p.get("price_usdt", 0) or p.get("price_vnd", 0))
-        name = (p.get("name") or "?")[:28]
+        name = (p.get("name") or "?")[:40]
         kw = dict(
             text=f"{name} · {stock} шт · {price}",
             callback_data=f"mall_prod:{sid}:{p['id']}",
@@ -73,6 +91,14 @@ async def _mall_show_products(cb: CallbackQuery, shop: dict) -> None:
         if stock > 0:
             kw["style"] = ButtonStyle.SUCCESS
         rows.append([InlineKeyboardButton(**kw)])
+    if pages > 1:
+        nav = []
+        if page > 0:
+            nav.append(InlineKeyboardButton(text="◀", callback_data=f"mall_sel:{sid}:{page - 1}"))
+        nav.append(InlineKeyboardButton(text=f"{page + 1}/{pages}", callback_data="mall_noop"))
+        if page < pages - 1:
+            nav.append(InlineKeyboardButton(text="▶", callback_data=f"mall_sel:{sid}:{page + 1}"))
+        rows.append(nav)
     if shop.get("link"):
         rows.append([InlineKeyboardButton(text="Пополнить баланс в шопе", url=shop["link"], style=ButtonStyle.PRIMARY, icon_custom_emoji_id=ID_UP)])
     rows.append([InlineKeyboardButton(text="Назад", callback_data="mall_home", style=ButtonStyle.DANGER, icon_custom_emoji_id=ID_NO)])
@@ -108,7 +134,8 @@ async def cb_mall_prod(cb: CallbackQuery):
     pending_buy[cb.from_user.id] = {"p": p, "cat": "mall", "shop_id": sid}
     desc = translate_desc(p.get("description", ""))
     desc_block = f"\n<blockquote>{escape(desc)}</blockquote>\n" if desc else ""
-    rows = [[InlineKeyboardButton(text="Назад", callback_data=f"mall_sel:{sid}", style=ButtonStyle.DANGER, icon_custom_emoji_id=ID_NO)]]
+    back_page = mall_page.get(cb.from_user.id, 0)
+    rows = [[InlineKeyboardButton(text="Назад", callback_data=f"mall_sel:{sid}:{back_page}", style=ButtonStyle.DANGER, icon_custom_emoji_id=ID_NO)]]
     if shop.get("link"):
         rows.insert(0, [InlineKeyboardButton(text="Пополнить баланс в шопе", url=shop["link"], style=ButtonStyle.PRIMARY, icon_custom_emoji_id=ID_UP)])
     await cb.message.edit_text(
