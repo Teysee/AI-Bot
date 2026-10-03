@@ -145,6 +145,11 @@ async def _autobuy_tick(bot: Bot, shop: dict, products: list[dict]) -> None:
             continue
 
         items = res.get("items", [])
+        add_history(
+            auto=True, name=w.get("name", "?"), cat=w.get("cat", "gpt"), shop_id=sid,
+            product_id=w.get("product_id"), qty=want,
+            price=fmt_usdt(price_usdt * want) if price_usdt else "", items=items,
+        )
         w["qty_left"] = max(0, w.get("qty_left", 0) - want)
         w["notified_low_balance"] = False
         w.pop("last_error", None)

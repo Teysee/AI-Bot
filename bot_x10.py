@@ -11,14 +11,11 @@ def _cat_store_count(cat: str) -> str:
 
 def _cat_menu_text(cat: str) -> str:
     c = get_cat(cat)
-    txt = (
-        f"{c['ce']} <b>{c['title']}</b>\n\n"
-        f"{CE_BOX} На складе: <b>{_cat_store_count(cat)}</b>"
-    )
-    watches = load_autobuy()
-    if watches:
-        total = sum(w.get("qty_left", 0) for w in watches)
-        txt += f"\n{CE_PIN} Автопокупки: <b>{len(watches)}</b> (ждём {total} шт.)"
+    txt = f"{c['ce']} <b>{c['title']}</b>\n\n{CE_OUT} <b>Купить</b> — товары раздела из магазина"
+    mine = [w for w in load_autobuy() if w.get("cat") == cat]
+    if mine:
+        total = sum(w.get("qty_left", 0) for w in mine)
+        txt += f"\n{CE_PIN} Автопокупки в разделе: <b>{len(mine)}</b> (ждём {total} шт.)"
     return txt
 
 

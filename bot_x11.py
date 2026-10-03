@@ -28,8 +28,8 @@ async def cb_shop_prod(cb: CallbackQuery):
         f"Цена: {fmt_usdt(p.get('price_usdt', 0))}\n"
         f"В наличии: <b>{p.get('stock', 0)}</b> шт.\n"
         f"{desc_block}\n"
-        f"{CE_KBD} <b>Отправь количество сообщением</b> (1-100):",
-        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+        f"{CE_KBD} <b>Сколько купить?</b> Нажми или отправь число (1-100):",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=qty_rows() + [
             [InlineKeyboardButton(text="Назад", callback_data=f"shop_sel:{cat}:{sid}", style=ButtonStyle.DANGER, icon_custom_emoji_id=ID_NO)],
         ]),
         parse_mode="HTML",
@@ -102,6 +102,13 @@ async def cb_shop_now(cb: CallbackQuery):
         + (f" (бонус +{order.get('bonus')})" if order.get("bonus") else "")
         + f"\nЦена: <b>{order.get('total_price')}</b> {order.get('currency', currency.upper())}"
         + (f"\nНовый баланс: <b>{nb}</b>" if nb is not None else "")
+    )
+    add_history(
+        auto=False, name=str(order.get("product", p["name"])), cat=info.get("cat", "gpt"),
+        shop_id=shop.get("id"), product_id=p["id"], qty=order.get("total_items", len(items)),
+        price=f"{order.get('total_price')} {order.get('currency', currency.upper())}"
+        if order.get("total_price") is not None else "",
+        items=items,
     )
     await cb.message.edit_text(head, parse_mode="HTML")
     ce = get_cat(info.get("cat", "gpt"))["ce"]

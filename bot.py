@@ -155,25 +155,25 @@ CDK_PATTERNS = [
 ]
 
 HELP_TEXT = (
-    f"{CE_BOX} <b>Склад подписок</b>\n\n"
-    f"{CE_OUT} <b>Как выдавать:</b>\n"
+    f"{CE_BOX} <b>Магазин подписок</b>\n\n"
+    f"{CE_OUT} <b>Как купить:</b>\n"
     f"Нажми {CE_GROK} <b>Grok</b>, {CE_GEMINI} <b>Gemini</b>, {CE_GPT} <b>ChatGPT</b>, "
     f"{CE_CAPCUT} <b>CapCut</b>, {CE_CLAUDE} <b>Claude</b> "
-    f"или {CE_PPLX} <b>Perplexity</b> → выбери раздел\n\n"
-    f"{CE_TIP} В каждом разделе: <b>Купить</b> — покупка через шоп "
-    f"(сейчас или автопокупка при появлении), <b>Хранилище</b> — выдача со склада\n\n"
-    f"{CE_LIST} /list — список Grok-аккаунтов\n"
-    f"{CE_COUNT} /count — статистика всего склада\n"
-    f"{CE_TRASH} /use N — удалить аккаунт №N\n"
-    f"{CE_WARN} /clear — очистить Grok-склад\n"
-    f"{CE_KEY} /settoken TOKEN — сменить токен бота\n"
-    f"{CE_KEY} /setapikey КЛЮЧ — API-ключ шопа\n"
+    f"или {CE_PPLX} <b>Perplexity</b> → <b>Купить</b> → товар → количество.\n"
+    f"Можно купить сразу или поставить <b>автопокупку</b> — куплю, как только товар появится.\n\n"
+    f"{CE_BOX} <b>Магазины</b> — весь ассортимент подключённых шопов\n"
+    f"{CE_PIN} <b>Автопокупки</b> — что ждём и последние покупки "
+    f"(аккаунты можно открыть повторно, товар — купить ещё раз)\n\n"
+    f"{CE_PIN} /autobuys — автопокупки и последние покупки\n"
+    f"{CE_TIP} /autostatus — что автопокупка видит в магазине\n"
     f"{CE_BOX} /shops — магазины и балансы\n"
     f"{CE_IN} /addshop — подключить новый шоп\n"
+    f"{CE_KEY} /setapikey КЛЮЧ — API-ключ шопа\n"
     f"{CE_PIN} /newcat Название — новый раздел товаров\n"
     f"{CE_TIP} /setemoji — сменить эмодзи раздела\n"
+    f"{CE_KEY} /settoken TOKEN — сменить токен бота\n"
     f"{CE_UP} /update — обновить бота с GitHub\n\n"
-    f"{CE_TIP} Кнопки пропали? Отправь /start"
+    f"{CE_TIP} Кнопки пропали или старые? Отправь /start"
 )
 
 _lock = asyncio.Lock()

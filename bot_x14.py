@@ -95,9 +95,16 @@ CE_MALL = _e(ID_MALL, "🏪")
 _orig_main_keyboard = main_keyboard
 
 def main_keyboard() -> ReplyKeyboardMarkup:
-    mk = _orig_main_keyboard()
-    rows = list(mk.keyboard)
-    rows.insert(-1, [KeyboardButton(text="Магазины", icon_custom_emoji_id=ID_MALL)])
+    cat_btns = [
+        KeyboardButton(text=c["title"], icon_custom_emoji_id=c["icon"])
+        for c in all_cats().values()
+    ]
+    rows = [[KeyboardButton(text="Магазины", icon_custom_emoji_id=ID_MALL)]]
+    rows += [cat_btns[i:i + 2] for i in range(0, len(cat_btns), 2)]
+    rows.append([
+        KeyboardButton(text="Автопокупки", icon_custom_emoji_id=ID_PIN),
+        KeyboardButton(text="Помощь", icon_custom_emoji_id=ID_HELP),
+    ])
     return ReplyKeyboardMarkup(keyboard=rows, resize_keyboard=True, is_persistent=True)
 
 refresh_mk()

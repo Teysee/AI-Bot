@@ -15,12 +15,11 @@ def grok_type_keyboard(days: int, has_cdk: bool = True) -> InlineKeyboardMarkup:
 
 def cat_menu_keyboard(cat: str, watch_count: int = 0) -> InlineKeyboardMarkup:
     rows = [[
-        InlineKeyboardButton(text="Купить",    callback_data=f"shop_buy:{cat}",   style=ButtonStyle.SUCCESS, icon_custom_emoji_id=ID_OUT),
-        InlineKeyboardButton(text="Хранилище", callback_data=f"shop_store:{cat}", style=ButtonStyle.PRIMARY, icon_custom_emoji_id=ID_BOX),
+        InlineKeyboardButton(text="Купить", callback_data=f"shop_buy:{cat}", style=ButtonStyle.SUCCESS, icon_custom_emoji_id=ID_OUT),
     ]]
     if watch_count:
         rows.append([InlineKeyboardButton(
-            text=f"Автопокупки ({watch_count})", callback_data=f"shop_watch:{cat}",
+            text=f"Автопокупки ({watch_count})", callback_data="ab_home",
             style=ButtonStyle.PRIMARY, icon_custom_emoji_id=ID_PIN,
         )])
     rows.append([InlineKeyboardButton(text="Отмена", callback_data="grok_cancel", style=ButtonStyle.DANGER, icon_custom_emoji_id=ID_NO)])

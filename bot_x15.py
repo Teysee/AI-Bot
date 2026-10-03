@@ -243,16 +243,16 @@ async def cb_mall_prod(cb: CallbackQuery):
         back_cb = f"mall_grp:{sid}:{_group_id(p['group'])}"
     else:
         back_cb = f"mall_sel:{sid}:{mall_page.get(cb.from_user.id, 0)}"
-    rows = [[InlineKeyboardButton(text="Назад", callback_data=back_cb, style=ButtonStyle.DANGER, icon_custom_emoji_id=ID_NO)]]
+    rows = qty_rows() + [[InlineKeyboardButton(text="Назад", callback_data=back_cb, style=ButtonStyle.DANGER, icon_custom_emoji_id=ID_NO)]]
     if shop.get("link"):
-        rows.insert(0, [InlineKeyboardButton(text="Пополнить баланс в шопе", url=shop["link"], style=ButtonStyle.PRIMARY, icon_custom_emoji_id=ID_UP)])
+        rows.insert(1, [InlineKeyboardButton(text="Пополнить баланс в шопе", url=shop["link"], style=ButtonStyle.PRIMARY, icon_custom_emoji_id=ID_UP)])
     await cb.message.edit_text(
         f"{CE_MALL} <b>{escape(p['name'])}</b>\n"
         f"Магазин: {escape(shop.get('name', '?'))}\n"
         f"Цена: {fmt_usdt(p.get('price_usdt', 0))}\n"
         f"В наличии: <b>{p.get('stock', 0)}</b> шт.\n"
         f"{desc_block}\n"
-        f"{CE_KBD} <b>Отправь количество сообщением</b> (1-100):",
+        f"{CE_KBD} <b>Сколько купить?</b> Нажми или отправь число (1-100):",
         reply_markup=InlineKeyboardMarkup(inline_keyboard=rows),
         parse_mode="HTML",
     )
@@ -260,6 +260,6 @@ async def cb_mall_prod(cb: CallbackQuery):
 
 # ─── Универсальный обработчик входящего текста ──────────────────────────────
 
-# continue bot_x16.py
-_NEXT = Path(__file__).resolve().with_name('bot_x16.py')
+# continue bot_x19.py (автопокупки и история), из него — bot_x16.py
+_NEXT = Path(__file__).resolve().with_name('bot_x19.py')
 exec(compile(_NEXT.read_text(encoding='utf-8'), str(_NEXT), 'exec'))

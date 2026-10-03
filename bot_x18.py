@@ -73,15 +73,7 @@ async def main():
 
     await bot.set_my_commands([
         BotCommand(command="start",    description="🏠 Главное меню"),
-        BotCommand(command="list",     description="📋 Все Grok-аккаунты"),
-        BotCommand(command="count",    description="📊 Статистика склада"),
-        BotCommand(command="pop",      description="📦 Выдать Grok (с выбором)"),
-        BotCommand(command="3day",     description="⚡ Выдать Grok 3-дневный"),
-        BotCommand(command="7day",     description="📅 Выдать Grok 7-дневный"),
-        BotCommand(command="14day",    description="🌟 Выдать Grok 14-дневный"),
-        BotCommand(command="30day",    description="👑 Выдать Grok 30-дневный"),
-        BotCommand(command="use",      description="🗑 Удалить Grok по номеру"),
-        BotCommand(command="clear",    description="⚠️ Очистить Grok-склад"),
+        BotCommand(command="autobuys", description="📌 Автопокупки и последние покупки"),
         BotCommand(command="shops",    description="🏪 Магазины и балансы"),
         BotCommand(command="addshop",  description="➕ Подключить шоп"),
         BotCommand(command="renameshop", description="📝 Переименовать шоп"),
